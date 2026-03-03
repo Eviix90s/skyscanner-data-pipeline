@@ -81,9 +81,15 @@ El resultado es un sistema donde las 4 hojas se actualizan en paralelo, el tiemp
 
 ---
 
-### Fase 6 — CI/CD automatizado (en curso)
+### Fase 6 — CI/CD completo con GitHub Actions y Watchtower
 
-La siguiente etapa es configurar un pipeline de CI/CD completo en GitHub Actions para automatizar el build, push a Docker Hub y despliegue al servidor en cada push a `main`.
+Con la arquitectura de contenedores estable, el siguiente paso fue eliminar cualquier intervención manual en el proceso de despliegue. Se configuró un pipeline completo end-to-end usando **GitHub Actions** y **Watchtower**.
+
+El flujo funciona así: cada `git push` a `main` dispara automáticamente un workflow en GitHub Actions que construye la nueva imagen Docker y la publica en Docker Hub con dos tags — `latest` y el SHA del commit para trazabilidad de versiones. En paralelo, **Watchtower** corre como un quinto contenedor en el servidor y revisa Docker Hub cada 5 minutos. Cuando detecta que hay una imagen nueva, hace el pull y reinicia los 4 contenedores de forma automática, sin ninguna intervención manual.
+
+Las credenciales de Docker Hub se almacenan como **GitHub Actions Secrets** cifrados, nunca en texto plano en el repositorio. El servidor solo necesita las variables `DOCKERHUB_USERNAME` y `DOCKERHUB_TOKEN` en su `.env` local para que Watchtower pueda autenticarse.
+
+El resultado es un pipeline completamente automatizado: un cambio en el código llega a producción en menos de 2 minutos sin tocar el servidor.
 
 ---
 
@@ -130,7 +136,7 @@ Los 4 contenedores usan la **misma imagen** (`alexn90s/skyscanner-bot:latest`) y
 | Autenticación Google | OAuth2 / Service Account |
 | Configuración | Variables de entorno (.env) |
 | Logging | RotatingFileHandler (10MB, 5 backups) |
-| CI/CD | GitHub Actions (en configuración) |
+| CI/CD | GitHub Actions + Watchtower |
 
 ---
 
@@ -195,12 +201,15 @@ El `.dockerignore` excluye los mismos archivos sensibles del contexto de build. 
 
 ```
 skyscanner-data-pipeline/
-├── apiskyscanner_api.py       ← Script principal
-├── docker-compose.yml         ← Orquestación de los 4 contenedores
-├── Dockerfile                 ← Build de la imagen
-├── requirements.txt           ← Dependencias Python
-├── .gitignore                 ← Excluye secretos y archivos runtime
-├── dockerignore               ← Excluye secretos del build de Docker
+├── apiskyscanner_api.py           ← Script principal
+├── docker-compose.yml             ← Orquestación de los 5 contenedores (4 bots + Watchtower)
+├── Dockerfile                     ← Build de la imagen
+├── requirements.txt               ← Dependencias Python
+├── .gitignore                     ← Excluye secretos y archivos runtime
+├── dockerignore                   ← Excluye secretos del build de Docker
+├── .github/
+│   └── workflows/
+│       └── docker-build-push.yml  ← Pipeline CI/CD (build + push a Docker Hub)
 └── README.md
 ```
 
@@ -260,16 +269,12 @@ docker compose down
 
 ### Actualizar a nueva versión
 
-Desde el equipo de desarrollo:
+El despliegue es completamente automático. Solo hace falta hacer push al repositorio:
 
 ```bash
-docker build -t alexn90s/skyscanner-bot:latest .
-docker push alexn90s/skyscanner-bot:latest
+git add .
+git commit -m "descripción del cambio"
+git push
 ```
 
-En el servidor:
-
-```bash
-docker compose pull
-docker compose up -d
-```
+GitHub Actions construye y publica la nueva imagen. Watchtower la detecta en el servidor y reinicia los contenedores automáticamente en menos de 5 minutos.
