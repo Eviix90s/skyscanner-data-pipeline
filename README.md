@@ -1,4 +1,4 @@
-# Skyscanner Data Pipeline
+# ✈️ Skyscanner Data Pipeline
 
 Automatización de extracción de precios de vuelos en tiempo real mediante la API de Skyscanner v3, con escritura incremental a Google Sheets y despliegue distribuido en Docker con 4 contenedores trabajando en paralelo.
 
