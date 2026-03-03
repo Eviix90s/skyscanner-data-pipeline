@@ -10,6 +10,7 @@ Skyscanner v3 + Google Sheets - VERSIÓN DOCKER LOOP + CACHE
 - Retry inteligente en errores 429 de Google Sheets
 - Soporte PUEBLA B: solo extras con límite de precio y checkbox
 - SheetManager: Caché de conexiones a Spreadsheets/Worksheets (reduce GetSpreadsheet 99%)
+- Hola este es mi primera prueba CI/CD automatizado
 """
 
 import os, requests, gspread, time, json, hashlib, logging, re, sys
