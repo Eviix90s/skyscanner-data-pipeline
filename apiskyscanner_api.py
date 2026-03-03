@@ -131,6 +131,8 @@ class SheetConfig:
     extras_col: str = "D"
     extras_limit_col: str = ""
     extras_check_col: str = ""
+    switch_url: str = ""         # URL de spreadsheet externo para el switch (ej: Administración VALV)
+    switch_sheet_name: str = ""  # Nombre de la hoja en el spreadsheet externo
 
 
 def load_sheet_configs() -> Dict[str, SheetConfig]:
@@ -144,7 +146,7 @@ def load_sheet_configs() -> Dict[str, SheetConfig]:
             captura_sheet=get_env(f'{prefix}CAPTURA_SHEET', f'REDONDO {ver}'),
             resultado_sheet=get_env(f'{prefix}RESULTADO_SHEET', f'Resultados' if ver == 'V1' else f'Resultados {ver[-1]}'),
             switch_cell=get_env(f'{prefix}SWITCH_CELL', 'F66'),
-            off_switch_cell=get_env(f'{prefix}OFF_SWITCH_CELL', 'F74'),
+            off_switch_cell=get_env(f'{prefix}OFF_SWITCH_CELL', ''),
             stats_cell=get_env(f'{prefix}STATS_CELL', 'F83'),
             origen_cell=get_env(f'{prefix}ORIGEN_CELL', 'E2'),
             destino_cell=get_env(f'{prefix}DESTINO_CELL', 'F2'),
@@ -154,6 +156,8 @@ def load_sheet_configs() -> Dict[str, SheetConfig]:
             extras_col=get_env(f'{prefix}EXTRAS_COL', EXTRAS_COL),
             extras_limit_col=get_env(f'{prefix}EXTRAS_LIMIT_COL', ''),
             extras_check_col=get_env(f'{prefix}EXTRAS_CHECK_COL', ''),
+            switch_url=get_env(f'{prefix}SWITCH_URL', ''),
+            switch_sheet_name=get_env(f'{prefix}SWITCH_SHEET', ''),
         )
     return configs
 
@@ -434,10 +438,19 @@ class SheetManager:
 # GOOGLE SHEETS - OPERACIONES (AHORA USAN SheetManager)
 # ============================================================================
 
+def _get_switch_worksheet(sm: SheetManager, cfg: SheetConfig):
+    """Retorna el worksheet donde está el switch.
+    Si cfg.switch_url está configurado, usa el spreadsheet externo (ej: Administración VALV).
+    Si no, usa el captura_sheet del propio bot."""
+    if cfg.switch_url and cfg.switch_sheet_name:
+        return sm.get_worksheet(cfg.switch_url, cfg.switch_sheet_name)
+    return sm.get_worksheet(get_sheet_url(cfg), cfg.captura_sheet)
+
+
 @sheets_retry
 def is_enabled(sm: SheetManager, cfg: SheetConfig) -> bool:
     try:
-        ws = sm.get_worksheet(get_sheet_url(cfg), cfg.captura_sheet)
+        ws = _get_switch_worksheet(sm, cfg)
         raw = (ws.acell(cfg.switch_cell).value or "").strip().upper()
         return raw == "ON"
     except gspread.exceptions.APIError:
@@ -449,9 +462,10 @@ def is_enabled(sm: SheetManager, cfg: SheetConfig) -> bool:
 @sheets_retry
 def apagar_switch(sm: SheetManager, cfg: SheetConfig):
     try:
-        ws = sm.get_worksheet(get_sheet_url(cfg), cfg.captura_sheet)
+        ws = _get_switch_worksheet(sm, cfg)
         ws.update_acell(cfg.switch_cell, 'OFF')
-        ws.update_acell(cfg.off_switch_cell, 'OFF')
+        if cfg.off_switch_cell:
+            ws.update_acell(cfg.off_switch_cell, 'OFF')
         logging.info(f" {cfg.captura_sheet}: Switch apagado")
     except gspread.exceptions.APIError:
         raise
