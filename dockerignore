@@ -1,0 +1,13 @@
+.env
+.env.*
+credentials/
+data/
+logs/
+*.json
+*.lock
+*.log
+__pycache__/
+*.pyc
+.git/
+README.md
+docker-compose.yml

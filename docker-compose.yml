@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  # ==============================
+  # CONTENEDOR 1: REDONDO V1
+  # ==============================
+  bot-v1:
+    image: alexn90s/skyscanner-bot:latest
+    container_name: skyscanner-bot-v1
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - PRIORIDAD_PROCESO=V1
+    volumes:
+      - ./credentials:/app/credentials:ro
+      - ./data/v1:/app/data
+      - ./logs/v1:/app/logs
+
+  # ==============================
+  # CONTENEDOR 2: REDONDO V2
+  # ==============================
+  bot-v2:
+    image: alexn90s/skyscanner-bot:latest
+    container_name: skyscanner-bot-v2
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - PRIORIDAD_PROCESO=V2
+    volumes:
+      - ./credentials:/app/credentials:ro
+      - ./data/v2:/app/data
+      - ./logs/v2:/app/logs
+
+  # ==============================
+  # CONTENEDOR 3: REDONDO V3
+  # ==============================
+  bot-v3:
+    image: alexn90s/skyscanner-bot:latest
+    container_name: skyscanner-bot-v3
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - PRIORIDAD_PROCESO=V3
+    volumes:
+      - ./credentials:/app/credentials:ro
+      - ./data/v3:/app/data
+      - ./logs/v3:/app/logs
+
+  # ==============================
+  # CONTENEDOR 4: PUEBLA B
+  # ==============================
+  bot-puebla:
+    image: alexn90s/skyscanner-bot:latest
+    container_name: skyscanner-bot-puebla
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - PRIORIDAD_PROCESO=PUEBLA
+    volumes:
+      - ./credentials:/app/credentials:ro
+      - ./data/puebla:/app/data
+      - ./logs/puebla:/app/logs
