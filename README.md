@@ -1,5 +1,7 @@
 # ✈️ Skyscanner Data Pipeline
 
+![Build & Push](https://github.com/Eviix90s/skyscanner-data-pipeline/actions/workflows/docker-build-push.yml/badge.svg)
+
 Automatización de extracción de precios de vuelos en tiempo real mediante la API de Skyscanner v3, con escritura incremental a Google Sheets y despliegue distribuido en Docker con 4 contenedores trabajando en paralelo.
 
 ---

@@ -64,3 +64,20 @@ services:
       - ./credentials:/app/credentials:ro
       - ./data/puebla:/app/data
       - ./logs/puebla:/app/logs
+
+  # ==============================
+  # CONTENEDOR 5: WATCHTOWER
+  # Auto-update cuando hay nueva imagen en Docker Hub
+  # ==============================
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - REPO_USER=${DOCKERHUB_USERNAME}
+      - REPO_PASS=${DOCKERHUB_TOKEN}
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=300
+      - WATCHTOWER_INCLUDE_STOPPED=false
