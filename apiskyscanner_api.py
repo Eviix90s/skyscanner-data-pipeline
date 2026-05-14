@@ -10,7 +10,6 @@ Skyscanner v3 + Google Sheets - VERSIÓN DOCKER LOOP + CACHE
 - Retry inteligente en errores 429 de Google Sheets
 - Soporte PUEBLA B: solo extras con límite de precio y checkbox
 - SheetManager: Caché de conexiones a Spreadsheets/Worksheets (reduce GetSpreadsheet 99%)
-- Hola este es mi primera prueba CI/CD automatizado
 """
 
 import os, requests, gspread, time, json, hashlib, logging, re, sys
@@ -93,7 +92,6 @@ CURRENCY = get_env('CURRENCY', 'MXN')
 # Técnico
 USE_ENTITY_ID = get_env_bool('USE_ENTITY_ID', True)
 WRITE_IMMEDIATELY = get_env_bool('WRITE_IMMEDIATELY', True)
-FORCE_BEST_TO_CHEAPEST = get_env_bool('FORCE_BEST_TO_CHEAPEST', True)
 
 # Hojas
 ORIGENES_FILAS = [int(x) for x in get_env_list('ORIGENES_FILAS', '39,41,43,45,47,49,51,53,55,57')]
@@ -676,16 +674,19 @@ def buscar_precios_skyscanner(entity_orig, entity_dest, ida, vuelta, iata_orig, 
         r = requests.post(URL_LIVE_CREATE, json=payload, headers=headers, timeout=30)
         r.raise_for_status()
         j = r.json()
-        best_result = _extraer_precios_de_respuesta(j)
+        initial = _extraer_precios_de_respuesta(j)
         token = j.get("sessionToken")
         if not token:
             logging.warning(" Sin sessionToken, retornando resultado inicial")
             metrics.record_search(0)
-            return _apply_force_best(best_result)
-        
+            return initial
+
         poll_count = 0
-        status = best_result.get('status')
+        status = initial.get('status')
+        cheapest_ever = initial.get('cheapest')
+        best_ever = initial.get('best')
         deadline = search_start + POLL_CONFIG["POLL_DEADLINE_SECONDS"]
+
         while True:
             elapsed = time.time() - search_start
             if time.time() >= deadline:
@@ -712,18 +713,20 @@ def buscar_precios_skyscanner(entity_orig, entity_dest, ida, vuelta, iata_orig, 
                 new_result = _extraer_precios_de_respuesta(poll_r.json())
                 status = new_result.get('status')
                 new_cheap = new_result.get('cheapest')
-                old_cheap = best_result.get('cheapest')
-                if new_cheap is not None:
-                    if old_cheap is None or new_cheap < old_cheap:
-                        logging.info(f"    Poll {poll_count}: ${old_cheap or '?'} → ${new_cheap}")
-                        best_result = new_result
+                new_best = new_result.get('best')
+                if new_cheap is not None and (cheapest_ever is None or new_cheap < cheapest_ever):
+                    logging.info(f"    Poll {poll_count} cheapest: ${cheapest_ever or '?'} → ${new_cheap}")
+                    cheapest_ever = new_cheap
+                if new_best is not None and (best_ever is None or new_best < best_ever):
+                    logging.info(f"    Poll {poll_count} best:     ${best_ever or '?'} → ${new_best}")
+                    best_ever = new_best
             except requests.RequestException as e:
                 logging.warning(f"    Error poll {poll_count}: {e}")
                 continue
-        
+
         metrics.record_search(poll_count)
-        final_result = _apply_force_best(best_result)
-        logging.info(f"    FINAL: Cheapest=${final_result.get('cheapest')} | Best=${final_result.get('best')} | Polls={poll_count}")
+        final_result = {'cheapest': cheapest_ever, 'best': best_ever, 'status': status}
+        logging.info(f"    FINAL: Cheapest=${cheapest_ever} | Best=${best_ever} | Polls={poll_count}")
         return final_result
     except requests.RequestException as e:
         logging.error(f" Error búsqueda: {e}")
@@ -731,12 +734,6 @@ def buscar_precios_skyscanner(entity_orig, entity_dest, ida, vuelta, iata_orig, 
         return {'best': None, 'cheapest': None}
 
 
-def _apply_force_best(result: dict) -> dict:
-    if not FORCE_BEST_TO_CHEAPEST: return result
-    c = result.get('cheapest')
-    b = result.get('best')
-    if c is not None and (b is None or b > c): result['best'] = c
-    return result
 
 # ============================================================================
 # LECTURA DE PARÁMETROS (AHORA USAN SheetManager)
@@ -902,18 +899,24 @@ def _procesar_hoja_normal(sm: SheetManager, version: str, cfg: SheetConfig) -> b
                     writer.write_row(fila)
                     logging.info(f"   Escrito: Cheapest=${cheapest:,} | Best=${best:,} MXN")
         
-        extras = filtrar_extras_unicos(obtener_origenes_extras(sm, cfg), iata_origen)
+        extras = obtener_origenes_extras_con_limite(sm, cfg)
         if extras:
-            logging.info(f"\n {len(extras)} orígenes extra: {extras}")
-            for iata_extra in extras:
+            logging.info(f"\n {len(extras)} orígenes extra")
+            for extra_info in extras:
+                iata_extra = extra_info['iata']
+                limite = extra_info['limite']
                 entity_ex, nombre_ex = obtener_entity_info(iata_extra)
                 if not entity_ex: continue
+                limite_str = f"${limite:,}" if limite else "sin límite"
                 for idx, (ida, vuelta) in enumerate(pares, 1):
-                    logging.info(f"\n[{iata_extra}] [{idx}/{len(pares)}] {ida} - {vuelta}")
+                    logging.info(f"\n[{iata_extra}] [{idx}/{len(pares)}] {ida} - {vuelta} | límite: {limite_str}")
                     precios = buscar_precios_skyscanner(entity_ex, entity_dest, ida, vuelta, iata_extra, iata_destino)
                     cheapest = precios.get('cheapest')
                     best = precios.get('best')
                     if cheapest:
+                        if limite and cheapest > limite:
+                            logging.info(f"   ${cheapest:,} > límite {limite_str} → omitido")
+                            continue
                         fila = [iata_extra, nombre_ex or iata_extra, entity_ex, iata_destino, nombre_dest, entity_dest,
                                 ida, vuelta, f"${cheapest:,} MXN", f"${best:,} MXN" if best else ""]
                         if WRITE_IMMEDIATELY: writer.write_row(fila)

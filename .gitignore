@@ -3,6 +3,12 @@
 credentials/
 *.json
 
+# Contexto local de Claude Code
+CLAUDE.md
+
+# Infraestructura local - no exponer en repo
+docker-compose.yml
+
 # Datos y logs generados en runtime
 data/
 logs/
