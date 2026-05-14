@@ -900,24 +900,18 @@ def _procesar_hoja_normal(sm: SheetManager, version: str, cfg: SheetConfig) -> b
                     writer.write_row(fila)
                     logging.info(f"   Escrito: Cheapest=${cheapest:,} | Best=${best:,} MXN")
         
-        extras = obtener_origenes_extras_con_limite(sm, cfg)
+        extras = filtrar_extras_unicos(obtener_origenes_extras(sm, cfg), iata_origen)
         if extras:
             logging.info(f"\n {len(extras)} orígenes extra")
-            for extra_info in extras:
-                iata_extra = extra_info['iata']
-                limite = extra_info['limite']
+            for iata_extra in extras:
                 entity_ex, nombre_ex = obtener_entity_info(iata_extra)
                 if not entity_ex: continue
-                limite_str = f"${limite:,}" if limite else "sin límite"
                 for idx, (ida, vuelta) in enumerate(pares, 1):
-                    logging.info(f"\n[{iata_extra}] [{idx}/{len(pares)}] {ida} - {vuelta} | límite: {limite_str}")
+                    logging.info(f"\n[{iata_extra}] [{idx}/{len(pares)}] {ida} - {vuelta}")
                     precios = buscar_precios_skyscanner(entity_ex, entity_dest, ida, vuelta, iata_extra, iata_destino)
                     cheapest = precios.get('cheapest')
                     best = precios.get('best')
                     if cheapest:
-                        if limite and cheapest > limite:
-                            logging.info(f"   ${cheapest:,} > límite {limite_str} → omitido")
-                            continue
                         fila = [iata_extra, nombre_ex or iata_extra, entity_ex, iata_destino, nombre_dest, entity_dest,
                                 ida, vuelta, f"${cheapest:,} MXN", f"${best:,} MXN" if best else ""]
                         if WRITE_IMMEDIATELY: writer.write_row(fila)
