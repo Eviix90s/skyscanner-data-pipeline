@@ -1,3 +1,18 @@
+# ========================================
+# SKYSCANNER BOT - MULTI-CONTENEDOR
+# ========================================
+# Cada contenedor procesa UNA sola hoja con su propia service account.
+# Cada service account tiene cuota independiente de 60 req/min.
+#
+# Comandos útiles:
+#   docker-compose up -d                → Levanta los 4 contenedores
+#   docker-compose logs -f bot-v1       → Ver logs de V1 en vivo
+#   docker-compose logs -f              → Ver logs de TODOS en vivo
+#   docker-compose restart bot-v2       → Reiniciar solo V2
+#   docker-compose down                 → Apagar todo
+#   docker-compose ps                   → Ver estado de todos
+# ========================================
+
 version: '3.8'
 
 services:
@@ -12,6 +27,7 @@ services:
       - .env
     environment:
       - PRIORIDAD_PROCESO=V1
+      - GOOGLE_KEYFILE=/app/credentials/service-account.json
     volumes:
       - ./credentials:/app/credentials:ro
       - ./data/v1:/app/data
@@ -28,6 +44,7 @@ services:
       - .env
     environment:
       - PRIORIDAD_PROCESO=V2
+      - GOOGLE_KEYFILE=/app/credentials/credentials_v2.json
     volumes:
       - ./credentials:/app/credentials:ro
       - ./data/v2:/app/data
@@ -44,6 +61,7 @@ services:
       - .env
     environment:
       - PRIORIDAD_PROCESO=V3
+      - GOOGLE_KEYFILE=/app/credentials/credentials_v3.json
     volumes:
       - ./credentials:/app/credentials:ro
       - ./data/v3:/app/data
@@ -60,13 +78,65 @@ services:
       - .env
     environment:
       - PRIORIDAD_PROCESO=PUEBLA
+      - GOOGLE_KEYFILE=/app/credentials/credentials_puebla.json
     volumes:
       - ./credentials:/app/credentials:ro
       - ./data/puebla:/app/data
       - ./logs/puebla:/app/logs
 
   # ==============================
-  # CONTENEDOR 5: WATCHTOWER
+  # CONTENEDOR 5: JALISCO B
+  # ==============================
+  bot-jalisco:
+    image: alexn90s/skyscanner-bot:latest
+    container_name: skyscanner-bot-jalisco
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - PRIORIDAD_PROCESO=JALISCO
+      - GOOGLE_KEYFILE=/app/credentials/credentials_jalisco.json
+    volumes:
+      - ./credentials:/app/credentials:ro
+      - ./data/jalisco:/app/data
+      - ./logs/jalisco:/app/logs
+
+  # ==============================
+  # CONTENEDOR 6: EDOMEX B
+  # ==============================
+  bot-edomex:
+    image: alexn90s/skyscanner-bot:latest
+    container_name: skyscanner-bot-edomex
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - PRIORIDAD_PROCESO=EDOMEX
+      - GOOGLE_KEYFILE=/app/credentials/credentials_edomex.json
+    volumes:
+      - ./credentials:/app/credentials:ro
+      - ./data/edomex:/app/data
+      - ./logs/edomex:/app/logs
+
+  # ==============================
+  # CONTENEDOR 7: YUCATAN B
+  # ==============================
+  bot-yucatan:
+    image: alexn90s/skyscanner-bot:latest
+    container_name: skyscanner-bot-yucatan
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - PRIORIDAD_PROCESO=YUCATAN
+      - GOOGLE_KEYFILE=/app/credentials/credentials_yucatan.json
+    volumes:
+      - ./credentials:/app/credentials:ro
+      - ./data/yucatan:/app/data
+      - ./logs/yucatan:/app/logs
+
+  # ==============================
+  # CONTENEDOR 8: WATCHTOWER
   # Auto-update cuando hay nueva imagen en Docker Hub
   # ==============================
   watchtower:
