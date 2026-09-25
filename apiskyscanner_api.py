@@ -102,6 +102,12 @@ WRITE_IMMEDIATELY = get_env_bool('WRITE_IMMEDIATELY', True)
 PARALLEL_SEARCHES = get_env_int('SS_PARALLEL_SEARCHES', 3)   # búsquedas Skyscanner simultáneas por bot
 WRITE_BATCH_SIZE = get_env_int('SS_WRITE_BATCH_SIZE', 5)     # filas por escritura a Sheets (1 = fila por fila)
 
+# Escalas: con SS_SOLO_DIRECTOS=true, cheapest y best se calculan SOLO con itinerarios sin escalas
+# (equivale al filtro "Directo" de la web). Si no hay directos para esa fecha, la fila se omite,
+# salvo que SS_SIN_DIRECTO_USAR_ESCALAS=true, en cuyo caso se usan los vuelos con escala.
+SOLO_DIRECTOS = get_env_bool('SS_SOLO_DIRECTOS', False)
+SIN_DIRECTO_USAR_ESCALAS = get_env_bool('SS_SIN_DIRECTO_USAR_ESCALAS', False)
+
 # Hojas
 ORIGENES_FILAS = [int(x) for x in get_env_list('ORIGENES_FILAS', '39,41,43,45,47,49,51,53,55,57')]
 EXTRAS_COL = get_env('EXTRAS_COL', 'D')
@@ -631,17 +637,34 @@ def obtener_entity_info(iata: str) -> tuple:
         return None, iata
 
 
+def _es_directo(it: dict, legs: dict) -> bool:
+    """True si TODOS los tramos del itinerario (ida y vuelta) tienen 0 escalas."""
+    for leg_id in it.get("legIds", []) or []:
+        if (legs.get(leg_id, {}) or {}).get("stopCount", 0):
+            return False
+    return True
+
+
 def _extraer_precios_de_respuesta(resp_json: dict) -> dict:
-    out = {'best': None, 'cheapest': None, 'fastest': None, 'status': None}
+    out = {'best': None, 'cheapest': None, 'fastest': None, 'status': None, 'directos': None, 'total_itins': None}
     try:
         content = resp_json.get("content", {})
         results = content.get("results", {})
         itins = results.get("itineraries", {}) or {}
+        legs = results.get("legs", {}) or {}
         sorting = content.get("sortingOptions", {}) or {}
         # La API v3 devuelve "status" en la RAÍZ de la respuesta, no dentro de "content".
         # Antes se leía content.status (siempre None) y nunca se detectaba COMPLETE.
         out['status'] = resp_json.get("status") or content.get("status")
-        
+        out['total_itins'] = len(itins)
+
+        # Filtro de escalas: igual que marcar solo "Directo" en la web
+        if SOLO_DIRECTOS and itins:
+            directos = {k: v for k, v in itins.items() if _es_directo(v, legs)}
+            out['directos'] = len(directos)
+            if directos or not SIN_DIRECTO_USAR_ESCALAS:
+                itins = directos
+
         def get_price(itin_id: str) -> Optional[int]:
             it = itins.get(itin_id)
             if not it: return None
@@ -649,12 +672,14 @@ def _extraer_precios_de_respuesta(resp_json: dict) -> dict:
             if not price_obj: return None
             mxn = _price_to_mxn(price_obj.get("amount", "0"), price_obj.get("unit", "PRICE_UNIT_MICRO"))
             return int(round(mxn)) if mxn > 0 else None
-        
+
+        # Se toma el PRIMER itinerario de cada orden que pase el filtro (best = primer directo del orden "best")
         for api_key, out_key in [("best", "best"), ("cheapest", "cheapest"), ("fastest", "fastest")]:
-            lista = sorting.get(api_key, []) or []
-            if lista:
-                price = get_price(lista[0].get("itineraryId"))
-                if price: out[out_key] = price
+            for entry in (sorting.get(api_key, []) or []):
+                price = get_price(entry.get("itineraryId"))
+                if price:
+                    out[out_key] = price
+                    break
         
         if out['cheapest'] is None and itins:
             min_price = None
@@ -771,7 +796,11 @@ def buscar_precios_skyscanner(entity_orig, entity_dest, ida, vuelta, iata_orig, 
 
         metrics.record_search(poll_count)
         final_result = {'cheapest': cheapest_ever, 'best': best_ever, 'status': status}
-        logging.info(f"    FINAL: Cheapest=${cheapest_ever} | Best=${best_ever} | Polls={poll_count}")
+        if SOLO_DIRECTOS and cheapest_ever is None:
+            logging.info(f"    FINAL: SIN VUELO DIRECTO para {route_log} {ida}→{vuelta} (fila omitida) | Polls={poll_count}")
+        else:
+            logging.info(f"    FINAL: Cheapest=${cheapest_ever} | Best=${best_ever} | Polls={poll_count}"
+                         + (" | solo directos" if SOLO_DIRECTOS else ""))
         return final_result
     except requests.RequestException as e:
         logging.error(f" Error búsqueda: {e}")
@@ -1150,6 +1179,7 @@ def main():
     logging.info(f"   Polling: MIN={POLL_CONFIG['MIN_GUARANTEED_POLLS']} | MAX={POLL_CONFIG['MAX_POLL_ROUNDS']} | Deadline={POLL_CONFIG['POLL_DEADLINE_SECONDS']}s")
     logging.info(f"   EntityID: {USE_ENTITY_ID} | Escritura inmediata: {WRITE_IMMEDIATELY}")
     logging.info(f"   Paralelo: {PARALLEL_SEARCHES} búsquedas | Lote escritura: {WRITE_BATCH_SIZE} filas")
+    logging.info(f"   Solo directos: {SOLO_DIRECTOS} | Sin directo usar escalas: {SIN_DIRECTO_USAR_ESCALAS} | Rate limit: {MAX_CALLS_PER_MIN}/min")
     logging.info(f"   Loop: {'CONTINUO' if LOOP_ENABLED else 'UNA VEZ'} | Intervalo: {LOOP_INTERVAL_SECONDS}s")
     logging.info(f"   Pausa entre checks: {SHEETS_CHECK_DELAY}s | Entre hojas: {PAUSE_BETWEEN_SHEETS}s")
     logging.info(f"   Hojas configuradas: {list(SHEET_CONFIGS.keys())}")

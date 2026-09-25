@@ -320,3 +320,12 @@ Comparacion contra skyscanner.com.mx (misma hora, 1 adulto, economy, MXN), toler
 
 Diferencia maxima: 354 MXN (cheapest), 110 MXN (best). Cheapest y best se toman del estado final (COMPLETE), igual que la pagina. Con el minimo entre polls (logica anterior) la tercera ruta daba cheapest=2,562 y best=2,562.
 
+## v3.4: solo vuelos directos
+
+| Variable | Valor | Que hace |
+|---|---|---|
+| `SS_SOLO_DIRECTOS` | true | cheapest y best se calculan SOLO con itinerarios sin escalas (como el filtro "Directo" de la web). Sin directos, la fila se omite |
+| `SS_SIN_DIRECTO_USAR_ESCALAS` | false | Si es true y no hay directos, se usan los vuelos con escala en vez de omitir la fila |
+| `SS_MAX_CALLS_PER_MIN` | 150 | Tope interno de llamadas a Skyscanner por bot (antes 80; con 5 en paralelo frenaba) |
+
+Ejemplo PBC-IAH 29 ene - 3 feb: sin filtro cheapest=5,751 (1 escala); con filtro cheapest=best=12,076 (directo United), igual que la web con "Directo" marcado.
