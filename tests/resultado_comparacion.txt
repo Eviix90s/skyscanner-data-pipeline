@@ -1,0 +1,18 @@
+
+6 busquedas por version | tolerancia 500 MXN
+
+Ruta     Ida         Vuelta       v3.2 cheap v3.3 cheap    Dif v3.2 best v3.3 best  t v3.2  t v3.3  OK
+----------------------------------------------------------------------------------------------------------
+MEX-CCS  2026-10-15  2026-10-25       13,102     13,102     +0    23,428    23,428   50.3s   19.5s  SI
+MEX-CCS  2026-11-04  2026-11-14       12,891     12,891     +0    18,111    18,111   50.3s   20.3s  SI
+MEX-CCS  2026-11-24  2026-12-04       11,286     11,286     +0    13,643    13,643   49.2s   19.9s  SI
+MEX-CUN  2026-10-15  2026-10-25        4,525      4,525     +0     5,236     5,236   58.9s   21.4s  SI
+MEX-CUN  2026-11-04  2026-11-14        3,011      3,011     +0     3,019     3,019   59.5s   23.6s  SI
+MEX-CUN  2026-11-24  2026-12-04        2,562      2,562     +0     2,562     2,562   56.8s   25.2s  SI
+----------------------------------------------------------------------------------------------------------
+Tiempo total v3.2 (secuencial):       325.0s  | promedio por busqueda  54.2s | polls prom 13.7
+Tiempo total v3.3 (3 en paralelo):     45.5s  | promedio por busqueda  21.6s | polls prom 6.0
+Aceleracion total: 7.1x
+Diferencia de precio: max 0 MXN | promedio 0 MXN | fuera de tolerancia: 0/6
+
+RESULTADO: EXACTO (todas dentro de tolerancia)

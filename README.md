@@ -278,3 +278,45 @@ git push
 ```
 
 GitHub Actions construye y publica la nueva imagen. Watchtower la detecta en el servidor y reinicia los contenedores automáticamente en menos de 5 minutos.
+
+## v3.3 (2026-09-25): COMPLETE, paralelo, lotes, best/cheapest del estado final
+
+- `status` se lee de la raiz de la respuesta de la API (antes `content.status`, siempre None: ninguna busqueda detectaba COMPLETE y todas agotaban los 55 s).
+- Busquedas en paralelo por bot (`SS_PARALLEL_SEARCHES`), orden de filas preservado.
+- Escritura a Sheets por lotes (`SS_WRITE_BATCH_SIZE`) y ampliacion automatica de filas (antes se perdian filas por "exceeds grid limits").
+- cheapest y best se toman del estado final (COMPLETE), no del minimo entre polls (best salia igual a cheapest en el 70% de los casos).
+- compose: DNS fijos 8.8.8.8/1.1.1.1 (el resolutor de Docker Desktop falla a ratos y perdia busquedas).
+- Resultado: mismo precio, 7x mas rapido (6 polls promedio vs 13.7).
+
+## Variables nuevas en `.env` (v3.3)
+
+| Variable | Valor | Que hace |
+|---|---|---|
+| `SS_PARALLEL_SEARCHES` | 3 | Busquedas Skyscanner simultaneas por bot. Subir de a 1 vigilando 429 |
+| `SS_WRITE_BATCH_SIZE` | 5 | Filas por request de escritura a Sheets (1 = fila por fila como antes) |
+| `LOOP_INTERVAL_SECONDS` | 30 | Cada cuanto se revisa el switch ON (antes 300) |
+| `SHEETS_CHECK_DELAY` | 0 | Pausa entre switches (un solo switch por contenedor, no aplica) |
+| `PAUSE_BETWEEN_SHEETS` | 0 | Pausa entre hojas (una sola hoja por contenedor, no aplica) |
+
+## Pruebas
+
+```
+# Comparar precios v3.2 (original) vs v3.3 (nueva), solo API Skyscanner, sin tocar Sheets
+docker run --rm --dns 8.8.8.8 --env-file .env -e SS_ENTITY_CACHE=//work/data/entity_cache.json -e SS_LOG_FILE=/tmp/t.log -v "C:/ruta/al/repo://work" -w //work --entrypoint python alexn90s/skyscanner-bot:dev tests/comparar_precios.py
+
+# Probar escritura por lotes y ampliacion de filas (crea y borra una pestana temporal en Resultados)
+docker run --rm --dns 8.8.8.8 --env-file .env -e GOOGLE_KEYFILE=//work/credentials/service-account.json -e SS_LOG_FILE=/tmp/t.log -v "C:/ruta/al/repo://work" -w //work --entrypoint python alexn90s/skyscanner-bot:dev tests/test_writer_sheets.py
+```
+
+Ultimo resultado (2026-09-25): 6/6 busquedas con 0 MXN de diferencia, 7.1x mas rapido, 6 polls promedio vs 13.7.
+
+Comparacion contra skyscanner.com.mx (misma hora, 1 adulto, economy, MXN), tolerancia 500 MXN:
+
+| Ruta | Fechas | Bot cheapest | Web cheapest | Bot best | Web best |
+|---|---|---|---|---|---|
+| MEX-CCS | 15 oct - 25 oct | 13,102 | 13,456 | 23,428 | 23,348 |
+| MEX-CUN | 4 nov - 14 nov | 3,011 | 3,000 | 3,011 | 3,121 |
+| MEX-CUN | 24 nov - 4 dic | 2,758 | 2,755 | 2,821 | 2,755 |
+
+Diferencia maxima: 354 MXN (cheapest), 110 MXN (best). Cheapest y best se toman del estado final (COMPLETE), igual que la pagina. Con el minimo entre polls (logica anterior) la tercera ruta daba cheapest=2,562 y best=2,562.
+
