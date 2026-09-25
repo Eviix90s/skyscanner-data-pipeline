@@ -1,0 +1,9 @@
+.git
+.env
+.env.example
+credentials/
+data/
+logs/
+docker-compose*.yml
+*.md
+__pycache__/

@@ -10,14 +10,10 @@ Skyscanner v3 + Google Sheets - VERSIÓN DOCKER LOOP + CACHE
 - Retry inteligente en errores 429 de Google Sheets
 - Soporte PUEBLA B: solo extras con límite de precio y checkbox
 - SheetManager: Caché de conexiones a Spreadsheets/Worksheets (reduce GetSpreadsheet 99%)
-- v3.3: detecta RESULT_STATUS_COMPLETE (status en raíz de la respuesta), búsquedas en
-  paralelo (SS_PARALLEL_SEARCHES), escritura por lotes (SS_WRITE_BATCH_SIZE) y
-  ampliación automática de la hoja de resultados
--v 3.3 skyscanner
+-v 3.2 skyscanner
 """
 
-import os, requests, gspread, time, json, hashlib, logging, re, sys, threading
-from concurrent.futures import ThreadPoolExecutor
+import os, requests, gspread, time, json, hashlib, logging, re, sys
 from oauth2client.service_account import ServiceAccountCredentials
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
@@ -97,10 +93,6 @@ CURRENCY = get_env('CURRENCY', 'MXN')
 # Técnico
 USE_ENTITY_ID = get_env_bool('USE_ENTITY_ID', True)
 WRITE_IMMEDIATELY = get_env_bool('WRITE_IMMEDIATELY', True)
-
-# Rendimiento
-PARALLEL_SEARCHES = get_env_int('SS_PARALLEL_SEARCHES', 3)   # búsquedas Skyscanner simultáneas por bot
-WRITE_BATCH_SIZE = get_env_int('SS_WRITE_BATCH_SIZE', 5)     # filas por escritura a Sheets (1 = fila por fila)
 
 # Hojas
 ORIGENES_FILAS = [int(x) for x in get_env_list('ORIGENES_FILAS', '39,41,43,45,47,49,51,53,55,57')]
@@ -211,30 +203,26 @@ setup_logging()
 
 class APIMetrics:
     def __init__(self):
-        self._lock = threading.Lock()
         self.reset()
-
+    
     def reset(self):
-        with self._lock:
-            self.total_calls = 0
-            self.successful_calls = 0
-            self.failed_calls = 0
-            self.cache_hits = 0
-            self.start_time = datetime.now()
-            self.searches_completed = 0
-            self.avg_poll_rounds = []
-
+        self.total_calls = 0
+        self.successful_calls = 0
+        self.failed_calls = 0
+        self.cache_hits = 0
+        self.start_time = datetime.now()
+        self.searches_completed = 0
+        self.avg_poll_rounds = []
+    
     def record_call(self, success=True, from_cache=False):
-        with self._lock:
-            self.total_calls += 1
-            if from_cache: self.cache_hits += 1
-            if success: self.successful_calls += 1
-            else: self.failed_calls += 1
-
+        self.total_calls += 1
+        if from_cache: self.cache_hits += 1
+        if success: self.successful_calls += 1
+        else: self.failed_calls += 1
+    
     def record_search(self, poll_rounds: int):
-        with self._lock:
-            self.searches_completed += 1
-            self.avg_poll_rounds.append(poll_rounds)
+        self.searches_completed += 1
+        self.avg_poll_rounds.append(poll_rounds)
     
     def get_stats(self):
         avg_polls = sum(self.avg_poll_rounds) / len(self.avg_poll_rounds) if self.avg_poll_rounds else 0
@@ -251,25 +239,21 @@ class APIMetrics:
 
 
 class RateLimiter:
-    """Limitador de llamadas por ventana de tiempo. Seguro para varios hilos:
-    el lock garantiza que las búsquedas en paralelo comparten el mismo cupo."""
     def __init__(self, max_calls=None, time_window=None):
         self.max_calls = max_calls or MAX_CALLS_PER_MIN
         self.time_window = time_window or RATE_LIMIT_WINDOW
         self.calls = []
-        self._lock = threading.Lock()
-
+    
     def wait_if_needed(self):
-        with self._lock:
+        now = time.time()
+        self.calls = [t for t in self.calls if now - t < self.time_window]
+        if len(self.calls) >= self.max_calls:
+            sleep_time = self.time_window - (now - self.calls[0]) + 0.5
+            logging.info(f"Rate limit, esperando {sleep_time:.1f}s")
+            time.sleep(max(0.0, sleep_time))
             now = time.time()
             self.calls = [t for t in self.calls if now - t < self.time_window]
-            if len(self.calls) >= self.max_calls:
-                sleep_time = self.time_window - (now - self.calls[0]) + 0.5
-                logging.info(f"Rate limit, esperando {sleep_time:.1f}s")
-                time.sleep(max(0.0, sleep_time))
-                now = time.time()
-                self.calls = [t for t in self.calls if now - t < self.time_window]
-            self.calls.append(now)
+        self.calls.append(now)
 
 
 class EntityCache:
@@ -505,48 +489,20 @@ def actualizar_fecha(sm: SheetManager, cfg: SheetConfig):
 
 
 class IncrementalWriter:
-    """Escribe resultados en la hoja en lotes de WRITE_BATCH_SIZE filas
-    (1 request por lote en vez de 1 por fila) y amplía la hoja si faltan filas
-    (antes: error 'exceeds grid limits' y la fila se perdía)."""
-    def __init__(self, ws_resultados, start_row: int = 2, batch_size: int = None):
+    def __init__(self, ws_resultados, start_row: int = 2):
         self.ws = ws_resultados
-        self.current_row = start_row          # siguiente fila libre en la hoja
+        self.current_row = start_row
         self.rows_written = 0
         self.batch_buffer = []
-        self.batch_size = max(1, batch_size or WRITE_BATCH_SIZE)
-        self._lock = threading.Lock()
-
-    def _asegurar_filas(self, ultima_fila: int):
-        row_count = self.ws.row_count
-        if ultima_fila > row_count:
-            faltan = ultima_fila - row_count + 50   # margen para no ampliar en cada lote
-            self.ws.add_rows(faltan)
-            logging.info(f"  Hoja ampliada +{faltan} filas (ahora {self.ws.row_count})")
-
+    
     def write_row(self, data: List[Any]):
-        with self._lock:
-            self.batch_buffer.append(data)
-            if len(self.batch_buffer) >= self.batch_size:
-                self._flush_locked()
-
-    def flush_buffer(self):
-        with self._lock:
-            self._flush_locked()
-
-    def _flush_locked(self):
-        if not self.batch_buffer:
-            return
-        rows = list(self.batch_buffer)
-        first = self.current_row
-        last = first + len(rows) - 1
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                self._asegurar_filas(last)
-                self.ws.update(range_name=f"A{first}:J{last}", values=rows, value_input_option="USER_ENTERED")
-                self.current_row = last + 1
-                self.rows_written += len(rows)
-                self.batch_buffer = []
+                row_range = f"A{self.current_row}:J{self.current_row}"
+                self.ws.update(row_range, [data], value_input_option="USER_ENTERED")
+                self.current_row += 1
+                self.rows_written += 1
                 return
             except gspread.exceptions.APIError as e:
                 if '429' in str(e) and attempt < max_retries - 1:
@@ -554,13 +510,21 @@ class IncrementalWriter:
                     logging.warning(f"  Sheets 429 al escribir - esperando {wait}s")
                     time.sleep(wait)
                 else:
-                    # Se quedan en el buffer; se reintentan en el flush final
-                    logging.error(f" Error escribiendo lote de {len(rows)} filas: {e}")
+                    logging.error(f" Error escribiendo fila: {e}")
+                    self.batch_buffer.append(data)
                     return
             except Exception as e:
-                logging.error(f" Error escribiendo lote de {len(rows)} filas: {e}")
+                logging.error(f" Error escribiendo fila: {e}")
+                self.batch_buffer.append(data)
                 return
-
+    
+    def flush_buffer(self):
+        if self.batch_buffer:
+            pending = list(self.batch_buffer)
+            self.batch_buffer = []
+            for data in pending:
+                self.write_row(data)
+    
     def get_rows_written(self) -> int:
         return self.rows_written
 
@@ -638,9 +602,7 @@ def _extraer_precios_de_respuesta(resp_json: dict) -> dict:
         results = content.get("results", {})
         itins = results.get("itineraries", {}) or {}
         sorting = content.get("sortingOptions", {}) or {}
-        # La API v3 devuelve "status" en la RAÍZ de la respuesta, no dentro de "content".
-        # Antes se leía content.status (siempre None) y nunca se detectaba COMPLETE.
-        out['status'] = resp_json.get("status") or content.get("status")
+        out['status'] = content.get("status")
         
         def get_price(itin_id: str) -> Optional[int]:
             it = itins.get(itin_id)
@@ -722,10 +684,6 @@ def buscar_precios_skyscanner(entity_orig, entity_dest, ida, vuelta, iata_orig, 
 
         poll_count = 0
         status = initial.get('status')
-        # cheapest y best: se toman del ÚLTIMO poll con contenido (estado final = COMPLETE),
-        # que es lo que muestra la página. Antes se guardaba el MÍNIMO visto en cualquier poll:
-        # best quedaba igual a cheapest en el 70% de los casos, y cheapest podía conservar
-        # una tarifa parcial que ya no existía en el resultado final.
         cheapest_ever = initial.get('cheapest')
         best_ever = initial.get('best')
         deadline = search_start + POLL_CONFIG["POLL_DEADLINE_SECONDS"]
@@ -757,13 +715,11 @@ def buscar_precios_skyscanner(entity_orig, entity_dest, ida, vuelta, iata_orig, 
                 status = new_result.get('status')
                 new_cheap = new_result.get('cheapest')
                 new_best = new_result.get('best')
-                if new_cheap is not None:
-                    if new_cheap != cheapest_ever:
-                        logging.info(f"    Poll {poll_count} cheapest: ${cheapest_ever or '?'} → ${new_cheap}")
+                if new_cheap is not None and (cheapest_ever is None or new_cheap < cheapest_ever):
+                    logging.info(f"    Poll {poll_count} cheapest: ${cheapest_ever or '?'} → ${new_cheap}")
                     cheapest_ever = new_cheap
-                if new_best is not None:
-                    if new_best != best_ever:
-                        logging.info(f"    Poll {poll_count} best:     ${best_ever or '?'} → ${new_best}")
+                if new_best is not None and (best_ever is None or new_best < best_ever):
+                    logging.info(f"    Poll {poll_count} best:     ${best_ever or '?'} → ${new_best}")
                     best_ever = new_best
             except requests.RequestException as e:
                 logging.warning(f"    Error poll {poll_count}: {e}")
@@ -777,36 +733,6 @@ def buscar_precios_skyscanner(entity_orig, entity_dest, ida, vuelta, iata_orig, 
         logging.error(f" Error búsqueda: {e}")
         metrics.record_call(False)
         return {'best': None, 'cheapest': None}
-
-
-def _buscar_job(job: dict) -> dict:
-    """Ejecuta una búsqueda a partir de un job (dict con los datos de la ruta)."""
-    try:
-        return buscar_precios_skyscanner(job['entity_orig'], job['entity_dest'], job['ida'], job['vuelta'],
-                                         job['iata_orig'], job['iata_dest'])
-    except Exception as e:
-        logging.error(f" Error búsqueda {job['iata_orig']}→{job['iata_dest']} {job['ida']}: {e}")
-        return {'best': None, 'cheapest': None}
-
-
-def buscar_en_paralelo(jobs: List[dict], max_workers: int = None):
-    """Ejecuta las búsquedas con hasta PARALLEL_SEARCHES hilos y entrega
-    (job, precios) EN EL MISMO ORDEN de entrada, conforme van terminando.
-    Cada búsqueda sigue siendo la misma función de siempre; solo corren varias a la vez."""
-    workers = max(1, max_workers or PARALLEL_SEARCHES)
-    if workers == 1 or len(jobs) <= 1:
-        for job in jobs:
-            yield job, _buscar_job(job)
-        return
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="busqueda") as ex:
-        for job, precios in zip(jobs, ex.map(_buscar_job, jobs)):
-            yield job, precios
-
-
-def _fila_resultado(job: dict, cheapest: int, best: Optional[int]) -> List[Any]:
-    return [job['iata_orig'], job.get('nombre_orig') or job['iata_orig'], job['entity_orig'],
-            job['iata_dest'], job.get('nombre_dest') or job['iata_dest'], job['entity_dest'],
-            job['ida'], job['vuelta'], f"${cheapest:,} MXN", f"${best:,} MXN" if best else ""]
 
 
 
@@ -960,41 +886,36 @@ def _procesar_hoja_normal(sm: SheetManager, version: str, cfg: SheetConfig) -> b
         ws_resultados = sm.get_worksheet(SHEET_DESTINO_URL, cfg.resultado_sheet)
         limpiar_resultados_seguro(ws_resultados)
         writer = IncrementalWriter(ws_resultados, start_row=2)
-
-        # Ruta principal: todas las fechas, en paralelo, resultados en orden
-        logging.info(f"\n Ruta principal ({len(pares)} fechas, {PARALLEL_SEARCHES} en paralelo)...")
-        jobs = [dict(entity_orig=entity_orig, entity_dest=entity_dest, ida=ida, vuelta=vuelta,
-                     iata_orig=iata_origen, iata_dest=iata_destino,
-                     nombre_orig=nombre_orig, nombre_dest=nombre_dest) for ida, vuelta in pares]
-        for idx, (job, precios) in enumerate(buscar_en_paralelo(jobs), 1):
+        
+        logging.info(f"\n Ruta principal ({len(pares)} fechas)...")
+        for idx, (ida, vuelta) in enumerate(pares, 1):
+            logging.info(f"\n[{idx}/{len(pares)}] {iata_origen}→{iata_destino} | {ida} - {vuelta}")
+            precios = buscar_precios_skyscanner(entity_orig, entity_dest, ida, vuelta, iata_origen, iata_destino)
             cheapest = precios.get('cheapest')
             best = precios.get('best')
-            logging.info(f"[{idx}/{len(jobs)}] {job['iata_orig']}→{job['iata_dest']} | {job['ida']} - {job['vuelta']} "
-                         f"→ Cheapest=${cheapest or 0:,} | Best=${best or 0:,}")
-            if cheapest and WRITE_IMMEDIATELY:
-                writer.write_row(_fila_resultado(job, cheapest, best))
-
-        # Orígenes extra: se resuelven las entidades en serie (usan caché) y
-        # luego TODAS las combinaciones origen×fecha se buscan en paralelo
+            if cheapest:
+                fila = [iata_origen, nombre_orig, entity_orig, iata_destino, nombre_dest, entity_dest,
+                        ida, vuelta, f"${cheapest:,} MXN", f"${best:,} MXN" if best else ""]
+                if WRITE_IMMEDIATELY:
+                    writer.write_row(fila)
+                    logging.info(f"   Escrito: Cheapest=${cheapest:,} | Best=${best:,} MXN")
+        
         extras = filtrar_extras_unicos(obtener_origenes_extras(sm, cfg), iata_origen)
         if extras:
             logging.info(f"\n {len(extras)} orígenes extra")
-            jobs_extra = []
             for iata_extra in extras:
                 entity_ex, nombre_ex = obtener_entity_info(iata_extra)
                 if not entity_ex: continue
-                for ida, vuelta in pares:
-                    jobs_extra.append(dict(entity_orig=entity_ex, entity_dest=entity_dest, ida=ida, vuelta=vuelta,
-                                           iata_orig=iata_extra, iata_dest=iata_destino,
-                                           nombre_orig=nombre_ex, nombre_dest=nombre_dest))
-            for idx, (job, precios) in enumerate(buscar_en_paralelo(jobs_extra), 1):
-                cheapest = precios.get('cheapest')
-                best = precios.get('best')
-                logging.info(f"[{job['iata_orig']}] [{idx}/{len(jobs_extra)}] {job['ida']} - {job['vuelta']} "
-                             f"→ Cheapest=${cheapest or 0:,} | Best=${best or 0:,}")
-                if cheapest and WRITE_IMMEDIATELY:
-                    writer.write_row(_fila_resultado(job, cheapest, best))
-
+                for idx, (ida, vuelta) in enumerate(pares, 1):
+                    logging.info(f"\n[{iata_extra}] [{idx}/{len(pares)}] {ida} - {vuelta}")
+                    precios = buscar_precios_skyscanner(entity_ex, entity_dest, ida, vuelta, iata_extra, iata_destino)
+                    cheapest = precios.get('cheapest')
+                    best = precios.get('best')
+                    if cheapest:
+                        fila = [iata_extra, nombre_ex or iata_extra, entity_ex, iata_destino, nombre_dest, entity_dest,
+                                ida, vuelta, f"${cheapest:,} MXN", f"${best:,} MXN" if best else ""]
+                        if WRITE_IMMEDIATELY: writer.write_row(fila)
+        
         writer.flush_buffer()
         logging.info(f"\n {version}: {writer.get_rows_written()} filas escritas")
         actualizar_fecha(sm, cfg)
@@ -1042,9 +963,7 @@ def _procesar_hoja_solo_extras(sm: SheetManager, version: str, cfg: SheetConfig)
         writer = IncrementalWriter(ws_resultados, start_row=2)
         total_buscados = 0
         total_filtrados = 0
-
-        # Entidades en serie (caché), luego todas las combinaciones origen×fecha en paralelo
-        jobs = []
+        
         for extra_info in extras:
             iata_extra = extra_info['iata']
             limite = extra_info['limite']
@@ -1053,28 +972,26 @@ def _procesar_hoja_solo_extras(sm: SheetManager, version: str, cfg: SheetConfig)
                 logging.warning(f" No se obtuvo EntityID para {iata_extra}, saltando")
                 continue
             limite_str = f"${limite:,}" if limite else "sin límite"
-            logging.info(f" {iata_extra} → {iata_destino} | Límite: {limite_str} | {len(pares)} fechas")
-            for ida, vuelta in pares:
-                jobs.append(dict(entity_orig=entity_ex, entity_dest=entity_dest, ida=ida, vuelta=vuelta,
-                                 iata_orig=iata_extra, iata_dest=iata_destino,
-                                 nombre_orig=nombre_ex, nombre_dest=nombre_dest, limite=limite))
-
-        logging.info(f"\n {len(jobs)} búsquedas, {PARALLEL_SEARCHES} en paralelo...")
-        for idx, (job, precios) in enumerate(buscar_en_paralelo(jobs), 1):
-            cheapest = precios.get('cheapest')
-            best = precios.get('best')
-            limite = job['limite']
-            total_buscados += 1
-            logging.info(f"  [{idx}/{len(jobs)}] {job['iata_orig']}→{job['iata_dest']} | {job['ida']} - {job['vuelta']} "
-                         f"→ Cheapest=${cheapest or 0:,} | Best=${best or 0:,}")
-            if cheapest:
-                if limite and cheapest > limite:
-                    total_filtrados += 1
-                    logging.info(f"    ${cheapest:,} > límite ${limite:,} → omitido")
-                    continue
-                if WRITE_IMMEDIATELY:
-                    writer.write_row(_fila_resultado(job, cheapest, best))
-
+            logging.info(f"\n{'─'*50}")
+            logging.info(f" {iata_extra} → {iata_destino} | Límite: {limite_str}")
+            logging.info(f"{'─'*50}")
+            for idx, (ida, vuelta) in enumerate(pares, 1):
+                logging.info(f"  [{idx}/{len(pares)}] {iata_extra}→{iata_destino} | {ida} - {vuelta}")
+                precios = buscar_precios_skyscanner(entity_ex, entity_dest, ida, vuelta, iata_extra, iata_destino)
+                cheapest = precios.get('cheapest')
+                best = precios.get('best')
+                total_buscados += 1
+                if cheapest:
+                    if limite and cheapest > limite:
+                        total_filtrados += 1
+                        logging.info(f"  ${cheapest:,} > límite ${limite:,} → omitido")
+                        continue
+                    fila = [iata_extra, nombre_ex or iata_extra, entity_ex, iata_destino, nombre_dest, entity_dest,
+                            ida, vuelta, f"${cheapest:,} MXN", f"${best:,} MXN" if best else ""]
+                    if WRITE_IMMEDIATELY:
+                        writer.write_row(fila)
+                        logging.info(f"   Escrito: ${cheapest:,} MXN (límite: {limite_str})")
+        
         writer.flush_buffer()
         logging.info(f"\n{'='*50}")
         logging.info(f" {version} COMPLETADO:")
@@ -1149,7 +1066,6 @@ def main():
     logging.info(" Iniciando Skyscanner Bot - VERSIÓN DOCKER LOOP + CACHE")
     logging.info(f"   Polling: MIN={POLL_CONFIG['MIN_GUARANTEED_POLLS']} | MAX={POLL_CONFIG['MAX_POLL_ROUNDS']} | Deadline={POLL_CONFIG['POLL_DEADLINE_SECONDS']}s")
     logging.info(f"   EntityID: {USE_ENTITY_ID} | Escritura inmediata: {WRITE_IMMEDIATELY}")
-    logging.info(f"   Paralelo: {PARALLEL_SEARCHES} búsquedas | Lote escritura: {WRITE_BATCH_SIZE} filas")
     logging.info(f"   Loop: {'CONTINUO' if LOOP_ENABLED else 'UNA VEZ'} | Intervalo: {LOOP_INTERVAL_SECONDS}s")
     logging.info(f"   Pausa entre checks: {SHEETS_CHECK_DELAY}s | Entre hojas: {PAUSE_BETWEEN_SHEETS}s")
     logging.info(f"   Hojas configuradas: {list(SHEET_CONFIGS.keys())}")
