@@ -147,6 +147,23 @@ class SheetConfig:
     extras_check_col: str = ""
     switch_url: str = ""         # URL de spreadsheet externo para el switch (ej: Administración VALV)
     switch_sheet_name: str = ""  # Nombre de la hoja en el spreadsheet externo
+    # --- Modo TRIANGULO (multi-city): todo lo lee de la propia hoja ---
+    tipo: str = "REDONDO"        # REDONDO (default) | TRIANGULO
+    leg1_origen_cell: str = "E2"
+    leg1_destino_cell: str = "F2"
+    leg2_origen_cell: str = "G2"
+    leg2_destino_cell: str = "H2"
+    personas_cell: str = ""      # adultos (ej. L3)
+    cabina_cell: str = ""        # Economia / Business... (ej. I2)
+    mercado_cell: str = ""       # MX (ej. I4)
+    moneda_cell: str = ""        # MXN (ej. Q3)
+    directo_cell: str = ""       # TRUE/FALSE preferir directo (ej. M5)
+    limite_cell: str = ""        # límite de precio por persona (ej. N10)
+    modo_cell: str = ""          # "Más barato" / "Recomendado" (ej. M4)
+    precio_col: str = "N"        # columna donde se escribe el precio
+    precio_fecha_col: str = "O"  # columna con la fecha de cada fila de precio
+    precio_fila_inicio: int = 11
+    precio_fila_fin: int = 130
 
 
 def load_sheet_configs() -> Dict[str, SheetConfig]:
@@ -172,6 +189,22 @@ def load_sheet_configs() -> Dict[str, SheetConfig]:
             extras_check_col=get_env(f'{prefix}EXTRAS_CHECK_COL', ''),
             switch_url=get_env(f'{prefix}SWITCH_URL', ''),
             switch_sheet_name=get_env(f'{prefix}SWITCH_SHEET', ''),
+            tipo=get_env(f'{prefix}TIPO', 'REDONDO').upper(),
+            leg1_origen_cell=get_env(f'{prefix}LEG1_ORIGEN_CELL', 'E2'),
+            leg1_destino_cell=get_env(f'{prefix}LEG1_DESTINO_CELL', 'F2'),
+            leg2_origen_cell=get_env(f'{prefix}LEG2_ORIGEN_CELL', 'G2'),
+            leg2_destino_cell=get_env(f'{prefix}LEG2_DESTINO_CELL', 'H2'),
+            personas_cell=get_env(f'{prefix}PERSONAS_CELL', ''),
+            cabina_cell=get_env(f'{prefix}CABINA_CELL', ''),
+            mercado_cell=get_env(f'{prefix}MERCADO_CELL', ''),
+            moneda_cell=get_env(f'{prefix}MONEDA_CELL', ''),
+            directo_cell=get_env(f'{prefix}DIRECTO_CELL', ''),
+            limite_cell=get_env(f'{prefix}LIMITE_CELL', ''),
+            modo_cell=get_env(f'{prefix}MODO_CELL', ''),
+            precio_col=get_env(f'{prefix}PRECIO_COL', 'N').upper(),
+            precio_fecha_col=get_env(f'{prefix}PRECIO_FECHA_COL', 'O').upper(),
+            precio_fila_inicio=get_env_int(f'{prefix}PRECIO_FILA_INICIO', 11),
+            precio_fila_fin=get_env_int(f'{prefix}PRECIO_FILA_FIN', 130),
         )
     return configs
 
@@ -645,7 +678,9 @@ def _es_directo(it: dict, legs: dict) -> bool:
     return True
 
 
-def _extraer_precios_de_respuesta(resp_json: dict) -> dict:
+def _extraer_precios_de_respuesta(resp_json: dict, solo_directos: Optional[bool] = None) -> dict:
+    """solo_directos=None usa el valor global del .env; una hoja puede pasar el suyo (True/False)."""
+    _sd = SOLO_DIRECTOS if solo_directos is None else solo_directos
     out = {'best': None, 'cheapest': None, 'fastest': None, 'status': None, 'directos': None, 'total_itins': None}
     try:
         content = resp_json.get("content", {})
@@ -659,7 +694,7 @@ def _extraer_precios_de_respuesta(resp_json: dict) -> dict:
         out['total_itins'] = len(itins)
 
         # Filtro de escalas: igual que marcar solo "Directo" en la web
-        if SOLO_DIRECTOS and itins:
+        if _sd and itins:
             directos = {k: v for k, v in itins.items() if _es_directo(v, legs)}
             out['directos'] = len(directos)
             if directos or not SIN_DIRECTO_USAR_ESCALAS:
@@ -700,35 +735,50 @@ def _is_search_complete(status: str) -> bool:
 
 
 @retry_with_backoff(max_retries=2)
-def buscar_precios_skyscanner(entity_orig, entity_dest, ida, vuelta, iata_orig, iata_dest) -> dict:
-    ok_i, _ = validar_fecha(ida)
-    ok_v, _ = validar_fecha(vuelta)
-    if not ok_i or not ok_v: return {'best': None, 'cheapest': None}
-    if datetime.strptime(vuelta, "%Y-%m-%d") < datetime.strptime(ida, "%Y-%m-%d"):
-        logging.warning(" Vuelta anterior a ida")
-        return {'best': None, 'cheapest': None}
-    
-    if USE_ENTITY_ID:
-        origin_place = {"entityId": entity_orig}
-        dest_place = {"entityId": entity_dest}
-        route_log = f"{iata_orig}({entity_orig}) → {iata_dest}({entity_dest})"
+def buscar_precios_skyscanner(entity_orig, entity_dest, ida, vuelta, iata_orig, iata_dest,
+                              legs: List[dict] = None, adults: int = None, cabin: str = None,
+                              market: str = None, currency: str = None, solo_directos: bool = None) -> dict:
+    """Búsqueda ida y vuelta (comportamiento de siempre) o multi-city si se pasa `legs`:
+        legs = [{'entity': id, 'iata': 'GDL', 'dest_entity': id, 'dest_iata': 'BOS', 'fecha': 'YYYY-MM-DD'}, ...]
+    Los demás parámetros opcionales permiten que una hoja use sus propios valores (personas,
+    cabina, mercado, moneda, directos) sin tocar el .env. Si no se pasan, se usa el .env."""
+    _sd = SOLO_DIRECTOS if solo_directos is None else solo_directos
+    if legs is None:
+        ok_i, _ = validar_fecha(ida)
+        ok_v, _ = validar_fecha(vuelta)
+        if not ok_i or not ok_v: return {'best': None, 'cheapest': None}
+        if datetime.strptime(vuelta, "%Y-%m-%d") < datetime.strptime(ida, "%Y-%m-%d"):
+            logging.warning(" Vuelta anterior a ida")
+            return {'best': None, 'cheapest': None}
+        legs = [dict(entity=entity_orig, iata=iata_orig, dest_entity=entity_dest, dest_iata=iata_dest, fecha=ida),
+                dict(entity=entity_dest, iata=iata_dest, dest_entity=entity_orig, dest_iata=iata_orig, fecha=vuelta)]
+        route_log = (f"{iata_orig}({entity_orig}) → {iata_dest}({entity_dest})" if USE_ENTITY_ID
+                     else f"{iata_orig} → {iata_dest}")
     else:
-        origin_place = {"iata": iata_orig}
-        dest_place = {"iata": iata_dest}
-        route_log = f"{iata_orig} → {iata_dest}"
-    
+        fechas = [l['fecha'] for l in legs]
+        for f in fechas:
+            ok, _ = validar_fecha(f)
+            if not ok: return {'best': None, 'cheapest': None}
+        if fechas != sorted(fechas):
+            logging.warning(f" Fechas de tramos fuera de orden: {fechas}")
+            return {'best': None, 'cheapest': None}
+        ida, vuelta = fechas[0], fechas[-1]
+        route_log = " | ".join(f"{l['iata']}→{l['dest_iata']} {l['fecha']}" for l in legs)
+
+    def _place(entity, iata):
+        return {"entityId": entity} if (USE_ENTITY_ID and entity) else {"iata": iata}
+    query_legs = [{"originPlaceId": _place(l['entity'], l['iata']),
+                   "destinationPlaceId": _place(l['dest_entity'], l['dest_iata']),
+                   "date": {"year": int(l['fecha'][:4]), "month": int(l['fecha'][5:7]), "day": int(l['fecha'][8:10])}}
+                  for l in legs]
+
     rate_limiter.wait_if_needed()
     headers = {"Content-Type": "application/json", "x-api-key": API_KEY}
     payload = {
         "query": {
-            "market": MARKET, "locale": LOCALE, "currency": CURRENCY,
-            "queryLegs": [
-                {"originPlaceId": origin_place, "destinationPlaceId": dest_place,
-                 "date": {"year": int(ida[:4]), "month": int(ida[5:7]), "day": int(ida[8:10])}},
-                {"originPlaceId": dest_place, "destinationPlaceId": origin_place,
-                 "date": {"year": int(vuelta[:4]), "month": int(vuelta[5:7]), "day": int(vuelta[8:10])}}
-            ],
-            "adults": ADULTOS, "cabinClass": CABIN,
+            "market": market or MARKET, "locale": LOCALE, "currency": currency or CURRENCY,
+            "queryLegs": query_legs,
+            "adults": adults or ADULTOS, "cabinClass": cabin or CABIN,
             "childrenAges": [] if CHILDREN == 0 else [8] * CHILDREN
         }
     }
@@ -738,7 +788,7 @@ def buscar_precios_skyscanner(entity_orig, entity_dest, ida, vuelta, iata_orig, 
         r = requests.post(URL_LIVE_CREATE, json=payload, headers=headers, timeout=30)
         r.raise_for_status()
         j = r.json()
-        initial = _extraer_precios_de_respuesta(j)
+        initial = _extraer_precios_de_respuesta(j, _sd)
         token = j.get("sessionToken")
         if not token:
             logging.warning(" Sin sessionToken, retornando resultado inicial")
@@ -778,7 +828,7 @@ def buscar_precios_skyscanner(entity_orig, entity_dest, ida, vuelta, iata_orig, 
                     continue
                 poll_r.raise_for_status()
                 poll_count += 1
-                new_result = _extraer_precios_de_respuesta(poll_r.json())
+                new_result = _extraer_precios_de_respuesta(poll_r.json(), _sd)
                 status = new_result.get('status')
                 new_cheap = new_result.get('cheapest')
                 new_best = new_result.get('best')
@@ -796,11 +846,11 @@ def buscar_precios_skyscanner(entity_orig, entity_dest, ida, vuelta, iata_orig, 
 
         metrics.record_search(poll_count)
         final_result = {'cheapest': cheapest_ever, 'best': best_ever, 'status': status}
-        if SOLO_DIRECTOS and cheapest_ever is None:
+        if _sd and cheapest_ever is None:
             logging.info(f"    FINAL: SIN VUELO DIRECTO para {route_log} {ida}→{vuelta} (fila omitida) | Polls={poll_count}")
         else:
             logging.info(f"    FINAL: Cheapest=${cheapest_ever} | Best=${best_ever} | Polls={poll_count}"
-                         + (" | solo directos" if SOLO_DIRECTOS else ""))
+                         + (" | solo directos" if _sd else ""))
         return final_result
     except requests.RequestException as e:
         logging.error(f" Error búsqueda: {e}")
@@ -809,10 +859,12 @@ def buscar_precios_skyscanner(entity_orig, entity_dest, ida, vuelta, iata_orig, 
 
 
 def _buscar_job(job: dict) -> dict:
-    """Ejecuta una búsqueda a partir de un job (dict con los datos de la ruta)."""
+    """Ejecuta una búsqueda a partir de un job (dict con los datos de la ruta).
+    Los jobs REDONDO solo traen los 6 datos básicos; los de TRIANGULO agregan legs/adults/etc."""
+    extra = {k: job[k] for k in ('legs', 'adults', 'cabin', 'market', 'currency', 'solo_directos') if k in job}
     try:
         return buscar_precios_skyscanner(job['entity_orig'], job['entity_dest'], job['ida'], job['vuelta'],
-                                         job['iata_orig'], job['iata_dest'])
+                                         job['iata_orig'], job['iata_dest'], **extra)
     except Exception as e:
         logging.error(f" Error búsqueda {job['iata_orig']}→{job['iata_dest']} {job['ida']}: {e}")
         return {'best': None, 'cheapest': None}
@@ -949,6 +1001,8 @@ def procesar_hoja(sm: SheetManager, version: str, cfg: SheetConfig) -> bool:
         if not is_enabled(sm, cfg):
             logging.info(f" {version}: Deshabilitada")
             return False
+        if cfg.tipo == 'TRIANGULO':
+            return _procesar_hoja_triangulo(sm, version, cfg)
         if cfg.solo_extras:
             return _procesar_hoja_solo_extras(sm, version, cfg)
         return _procesar_hoja_normal(sm, version, cfg)
@@ -1116,6 +1170,164 @@ def _procesar_hoja_solo_extras(sm: SheetManager, version: str, cfg: SheetConfig)
         return True
     except Exception as e:
         logging.error(f" Error en {version} (solo_extras): {e}")
+        try: apagar_switch(sm, cfg)
+        except: pass
+        return False
+
+
+# ============================================================================
+# MODO TRIÁNGULO / MULTI-CITY (hojas "VUE TRI ...")
+# Lee ruta, personas, cabina, mercado, moneda, directo, límite y modo de la
+# propia hoja; busca tramo1 (fecha IDA) + tramo2 (fecha VUELTA) como multi-city
+# y escribe UN precio por fecha en la columna de precio, alineado por la fecha.
+# ============================================================================
+
+_CABINAS = {'ECONOMIA': 'CABIN_CLASS_ECONOMY', 'ECONOMÍA': 'CABIN_CLASS_ECONOMY', 'ECONOMY': 'CABIN_CLASS_ECONOMY',
+            'PREMIUM': 'CABIN_CLASS_PREMIUM_ECONOMY', 'PREMIUM ECONOMY': 'CABIN_CLASS_PREMIUM_ECONOMY',
+            'BUSINESS': 'CABIN_CLASS_BUSINESS', 'EJECUTIVA': 'CABIN_CLASS_BUSINESS',
+            'PRIMERA': 'CABIN_CLASS_FIRST', 'FIRST': 'CABIN_CLASS_FIRST'}
+
+
+def _a1_a_rc(ref: str):
+    """'N10' -> (10, 14)"""
+    m = re.match(r'^([A-Za-z]+)(\d+)$', ref.strip())
+    if not m: raise ValueError(f"Referencia inválida: {ref}")
+    col = 0
+    for ch in m.group(1).upper(): col = col * 26 + (ord(ch) - 64)
+    return int(m.group(2)), col
+
+
+def _col_a_indice(col: str) -> int:
+    n = 0
+    for ch in col.strip().upper(): n = n * 26 + (ord(ch) - 64)
+    return n
+
+
+def _a_entero(v, default=None):
+    try:
+        s = str(v).replace(',', '').replace('$', '').replace(' ', '').strip()
+        return int(float(s)) if s else default
+    except (ValueError, TypeError):
+        return default
+
+
+def _procesar_hoja_triangulo(sm: SheetManager, version: str, cfg: SheetConfig) -> bool:
+    try:
+        ws = sm.get_worksheet(get_sheet_url(cfg), cfg.captura_sheet)
+        valores = ws.get_all_values()
+
+        def celda(ref: str, default: str = "") -> str:
+            if not ref: return default
+            r, c = _a1_a_rc(ref)
+            fila = valores[r - 1] if r - 1 < len(valores) else []
+            v = fila[c - 1] if c - 1 < len(fila) else ""
+            return v.strip() if isinstance(v, str) else (v if v is not None else default)
+
+        # --- Configuración leída de la hoja ---
+        o1, d1 = sanitizar_entrada(celda(cfg.leg1_origen_cell)), sanitizar_entrada(celda(cfg.leg1_destino_cell))
+        o2, d2 = sanitizar_entrada(celda(cfg.leg2_origen_cell)), sanitizar_entrada(celda(cfg.leg2_destino_cell))
+        if not all(validar_iata_code(x) for x in (o1, d1, o2, d2)):
+            logging.error(f" {version}: IATA inválido en tramos: {o1}→{d1}, {o2}→{d2}")
+            apagar_switch(sm, cfg)
+            return False
+        personas = _a_entero(celda(cfg.personas_cell), 1) or 1
+        cabina = _CABINAS.get(celda(cfg.cabina_cell).upper(), CABIN) if cfg.cabina_cell else CABIN
+        mercado = (celda(cfg.mercado_cell).upper() or MARKET) if cfg.mercado_cell else MARKET
+        moneda = (celda(cfg.moneda_cell).upper() or CURRENCY) if cfg.moneda_cell else CURRENCY
+        directo = (celda(cfg.directo_cell).upper() in ('TRUE', '1', 'SI', 'SÍ', 'ON')) if cfg.directo_cell else SOLO_DIRECTOS
+        limite = _a_entero(celda(cfg.limite_cell)) if cfg.limite_cell else None
+        modo = celda(cfg.modo_cell).upper() if cfg.modo_cell else 'MÁS BARATO'
+        usar_best = 'RECOMEND' in modo
+        logging.info(f" Modo TRIÁNGULO: {o1}→{d1} (ida) + {o2}→{d2} (vuelta)")
+        logging.info(f"   Personas={personas} | Cabina={cabina} | {mercado}/{moneda} | Directo={directo} | "
+                     f"Límite pp={limite} | Escribe={'best (Recomendado)' if usar_best else 'cheapest (Más barato)'} "
+                     f"en {cfg.precio_col}{cfg.precio_fila_inicio}:{cfg.precio_col}{cfg.precio_fila_fin}")
+
+        # --- Entidades (caché) ---
+        ent = {}
+        for iata in dict.fromkeys((o1, d1, o2, d2)):
+            e, _ = obtener_entity_info(iata)
+            if not e:
+                logging.error(f" No se obtuvo EntityID para {iata}")
+                apagar_switch(sm, cfg)
+                return False
+            ent[iata] = e
+
+        pares = leer_parametros_y_pares(sm, cfg)
+        if not pares:
+            logging.error(f" Sin fechas válidas")
+            apagar_switch(sm, cfg)
+            return False
+
+        # --- Fila de precio por fecha (columna de fechas de la zona de resultados) ---
+        ci = _col_a_indice(cfg.precio_fecha_col)
+        fila_por_fecha = {}
+        for r in range(cfg.precio_fila_inicio, cfg.precio_fila_fin + 1):
+            fila = valores[r - 1] if r - 1 < len(valores) else []
+            f = (fila[ci - 1] if ci - 1 < len(fila) else "").strip()
+            if f: fila_por_fecha.setdefault(f, r)
+
+        rango_precio = f"{cfg.precio_col}{cfg.precio_fila_inicio}:{cfg.precio_col}{cfg.precio_fila_fin}"
+        ws.batch_clear([rango_precio])
+        logging.info(f" Limpiado {rango_precio} | {len(pares)} fechas | {PARALLEL_SEARCHES} en paralelo")
+
+        jobs = [dict(entity_orig=ent[o1], entity_dest=ent[d1], ida=ida, vuelta=vuelta, iata_orig=o1, iata_dest=d1,
+                     legs=[dict(entity=ent[o1], iata=o1, dest_entity=ent[d1], dest_iata=d1, fecha=ida),
+                           dict(entity=ent[o2], iata=o2, dest_entity=ent[d2], dest_iata=d2, fecha=vuelta)],
+                     adults=personas, cabin=cabina, market=mercado, currency=moneda, solo_directos=directo)
+                for ida, vuelta in pares]
+
+        pendientes: List[tuple] = []
+        escritas = omitidas_limite = sin_precio = sin_fila = 0
+
+        def flush():
+            nonlocal pendientes
+            if not pendientes: return
+            data = [{'range': c, 'values': [[v]]} for c, v in pendientes]
+            for intento in range(3):
+                try:
+                    ws.batch_update(data, value_input_option='USER_ENTERED')
+                    pendientes = []
+                    return
+                except gspread.exceptions.APIError as e:
+                    if '429' in str(e) and intento < 2:
+                        logging.warning(f"  Sheets 429 al escribir - esperando {(intento + 1) * 30}s")
+                        time.sleep((intento + 1) * 30)
+                    else:
+                        logging.error(f" Error escribiendo {len(data)} precios: {e}")
+                        return
+
+        for idx, (job, precios) in enumerate(buscar_en_paralelo(jobs), 1):
+            precio = precios.get('best') if usar_best else precios.get('cheapest')
+            etiqueta = f"[{idx}/{len(jobs)}] {o1}→{d1} {job['ida']} | {o2}→{d2} {job['vuelta']}"
+            if not precio:
+                sin_precio += 1
+                logging.info(f"{etiqueta} → sin precio (celda vacía)")
+                continue
+            por_persona = precio / personas
+            if limite and por_persona > limite:
+                omitidas_limite += 1
+                logging.info(f"{etiqueta} → ${precio:,} (${por_persona:,.0f} pp) > límite ${limite:,} → celda vacía")
+                continue
+            fila = fila_por_fecha.get(job['ida'])
+            if not fila:
+                sin_fila += 1
+                logging.warning(f"{etiqueta} → ${precio:,} pero la fecha {job['ida']} no está en {cfg.precio_fecha_col}")
+                continue
+            pendientes.append((f"{cfg.precio_col}{fila}", int(precio)))
+            escritas += 1
+            logging.info(f"{etiqueta} → ${precio:,} → {cfg.precio_col}{fila}")
+            if len(pendientes) >= WRITE_BATCH_SIZE: flush()
+        flush()
+
+        logging.info(f"\n {version} TRIÁNGULO COMPLETADO: {escritas} precios escritos | "
+                     f"{omitidas_limite} sobre el límite | {sin_precio} sin precio | {sin_fila} sin fila de fecha")
+        if get_env(f'{version}_STATS_CELL'):
+            actualizar_fecha(sm, cfg)
+        apagar_switch(sm, cfg)
+        return True
+    except Exception as e:
+        logging.error(f" Error en {version} (triángulo): {e}")
         try: apagar_switch(sm, cfg)
         except: pass
         return False

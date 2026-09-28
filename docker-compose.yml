@@ -182,7 +182,31 @@ services:
         max-size: "10m"
         max-file: "3"
   # ==============================
-  # CONTENEDOR 8: WATCHTOWER
+  # CONTENEDOR 8: TRIÁNGULO JAZ (multi-city)
+  # ==============================
+  bot-trijaz:
+    image: alexn90s/skyscanner-bot:latest
+    container_name: skyscanner-bot-trijaz
+    restart: always
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    env_file:
+      - .env
+    environment:
+      - PRIORIDAD_PROCESO=TRIJAZ
+      - GOOGLE_KEYFILE=/app/credentials/credentials_multicity.json
+    volumes:
+      - ./credentials:/app/credentials:ro
+      - ./data/trijaz:/app/data
+      - ./logs/trijaz:/app/logs
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+  # ==============================
+  # CONTENEDOR 9: WATCHTOWER
   # Auto-update cuando hay nueva imagen en Docker Hub
   # ==============================
   watchtower:
