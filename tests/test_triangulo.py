@@ -16,9 +16,16 @@ for w in ss.worksheets():
     if w.title==nombre: ss.del_worksheet(w)
 copia=orig.duplicate(new_sheet_name=nombre, insert_sheet_index=len(ss.worksheets()))
 print("Copia creada:", nombre)
+# copia temporal de la pestaña de resultados (Triangulo1) en API_INDEX
+dst=client.open_by_url(bot.SHEET_DESTINO_URL); nombre_res="TEST-TRI-RES (borrar)"
+for w in dst.worksheets():
+    if w.title==nombre_res: dst.del_worksheet(w)
+copia_res=dst.worksheet(cfg.resultado_sheet).duplicate(new_sheet_name=nombre_res, insert_sheet_index=len(dst.worksheets()))
+print("Copia de resultados creada:", nombre_res)
 try:
     copia.update_acell(cfg.switch_cell, "ON")
-    cfg.captura_sheet=nombre           # el bot trabaja SOLO sobre la copia
+    cfg.captura_sheet=nombre           # el bot trabaja SOLO sobre las copias
+    cfg.resultado_sheet=nombre_res
     t=time.time()
     ok=bot.procesar_hoja(sm, 'TRIJAZ', cfg)
     print(f"\nprocesar_hoja -> {ok} en {time.time()-t:.0f}s")

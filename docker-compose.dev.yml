@@ -1,0 +1,22 @@
+# Uso: docker compose -f docker-compose.dev.yml up --build
+#   otra hoja:  $env:DEV_HOJA="TRIJAZ"; $env:DEV_KEYFILE="credentials_multicity.json"; docker compose -f docker-compose.dev.yml up --build
+# Levanta UN solo bot construido desde el codigo local, para probar cambios.
+# Cambia PRIORIDAD_PROCESO y GOOGLE_KEYFILE para probar otra hoja.
+services:
+  bot-dev:
+    build: .
+    image: alexn90s/skyscanner-bot:dev
+    container_name: skyscanner-bot-dev
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    env_file:
+      - .env
+    environment:
+      - PRIORIDAD_PROCESO=${DEV_HOJA:-V1}
+      - GOOGLE_KEYFILE=/app/credentials/${DEV_KEYFILE:-service-account.json}
+      - SS_LOG_LEVEL=DEBUG
+    volumes:
+      - ./credentials:/app/credentials:ro
+      - ./data/dev:/app/data
+      - ./logs/dev:/app/logs

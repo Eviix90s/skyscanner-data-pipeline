@@ -547,12 +547,13 @@ class IncrementalWriter:
     """Escribe resultados en la hoja en lotes de WRITE_BATCH_SIZE filas
     (1 request por lote en vez de 1 por fila) y amplía la hoja si faltan filas
     (antes: error 'exceeds grid limits' y la fila se perdía)."""
-    def __init__(self, ws_resultados, start_row: int = 2, batch_size: int = None):
+    def __init__(self, ws_resultados, start_row: int = 2, batch_size: int = None, ultima_col: str = "J"):
         self.ws = ws_resultados
         self.current_row = start_row          # siguiente fila libre en la hoja
         self.rows_written = 0
         self.batch_buffer = []
         self.batch_size = max(1, batch_size or WRITE_BATCH_SIZE)
+        self.ultima_col = ultima_col          # REDONDO escribe A:J; TRIANGULO A:L
         self._lock = threading.Lock()
 
     def _asegurar_filas(self, ultima_fila: int):
@@ -582,7 +583,7 @@ class IncrementalWriter:
         for attempt in range(max_retries):
             try:
                 self._asegurar_filas(last)
-                self.ws.update(range_name=f"A{first}:J{last}", values=rows, value_input_option="USER_ENTERED")
+                self.ws.update(range_name=f"A{first}:{self.ultima_col}{last}", values=rows, value_input_option="USER_ENTERED")
                 self.current_row = last + 1
                 self.rows_written += len(rows)
                 self.batch_buffer = []
@@ -604,13 +605,13 @@ class IncrementalWriter:
         return self.rows_written
 
 @sheets_retry
-def limpiar_resultados_seguro(ws_resultados):
+def limpiar_resultados_seguro(ws_resultados, ultima_col: str = "J"):
     try:
         frozen = ws_resultados._properties.get("gridProperties", {}).get("frozenRowCount", 0) or 0
         start_row = max(2, frozen + 1)
         last_row = ws_resultados.row_count
         if last_row >= start_row:
-            ws_resultados.batch_clear([f"A{start_row}:J{last_row}"])
+            ws_resultados.batch_clear([f"A{start_row}:{ultima_col}{last_row}"])
             logging.info(f" Limpiado: filas {start_row}-{last_row}")
     except gspread.exceptions.APIError:
         raise
@@ -1271,6 +1272,20 @@ def _procesar_hoja_triangulo(sm: SheetManager, version: str, cfg: SheetConfig) -
         ws.batch_clear([rango_precio])
         logging.info(f" Limpiado {rango_precio} | {len(pares)} fechas | {PARALLEL_SEARCHES} en paralelo")
 
+        # --- Pestaña de resultados (opcional): una fila por fecha con cheapest, best, tramo 2 y estado ---
+        writer = None
+        if get_env(f'{version}_RESULTADO_SHEET'):
+            ws_res = sm.get_worksheet(SHEET_DESTINO_URL, cfg.resultado_sheet)
+            limpiar_resultados_seguro(ws_res, ultima_col="L")
+            try:
+                if not (ws_res.acell('K1').value or '').strip():
+                    ws_res.update(range_name='K1:L1', values=[['Tramo 2', 'Estado']])
+            except Exception as e:
+                logging.warning(f" No se pudieron escribir encabezados K1:L1: {e}")
+            writer = IncrementalWriter(ws_res, start_row=2, ultima_col="L")
+            logging.info(f" Resultados también en '{cfg.resultado_sheet}' (A:L)")
+        nombres = {i: obtener_entity_info(i)[1] for i in dict.fromkeys((o1, d1, o2, d2))}
+
         jobs = [dict(entity_orig=ent[o1], entity_dest=ent[d1], ida=ida, vuelta=vuelta, iata_orig=o1, iata_dest=d1,
                      legs=[dict(entity=ent[o1], iata=o1, dest_entity=ent[d1], dest_iata=d1, fecha=ida),
                            dict(entity=ent[o2], iata=o2, dest_entity=ent[d2], dest_iata=d2, fecha=vuelta)],
@@ -1297,28 +1312,42 @@ def _procesar_hoja_triangulo(sm: SheetManager, version: str, cfg: SheetConfig) -
                         logging.error(f" Error escribiendo {len(data)} precios: {e}")
                         return
 
+        def fila_resultado(job, cheapest, best, estado):
+            return [o1, nombres.get(o1) or o1, ent[o1], d1, nombres.get(d1) or d1, ent[d1],
+                    job['ida'], job['vuelta'],
+                    f"${cheapest:,} MXN" if cheapest else "", f"${best:,} MXN" if best else "",
+                    f"{o2}→{d2}", estado]
+
         for idx, (job, precios) in enumerate(buscar_en_paralelo(jobs), 1):
-            precio = precios.get('best') if usar_best else precios.get('cheapest')
+            cheapest, best = precios.get('cheapest'), precios.get('best')
+            precio = best if usar_best else cheapest
             etiqueta = f"[{idx}/{len(jobs)}] {o1}→{d1} {job['ida']} | {o2}→{d2} {job['vuelta']}"
             if not precio:
                 sin_precio += 1
                 logging.info(f"{etiqueta} → sin precio (celda vacía)")
+                if writer: writer.write_row(fila_resultado(job, cheapest, best, "Sin precio"))
                 continue
             por_persona = precio / personas
             if limite and por_persona > limite:
                 omitidas_limite += 1
                 logging.info(f"{etiqueta} → ${precio:,} (${por_persona:,.0f} pp) > límite ${limite:,} → celda vacía")
+                if writer: writer.write_row(fila_resultado(job, cheapest, best, f"Sobre límite ${limite:,}"))
                 continue
             fila = fila_por_fecha.get(job['ida'])
             if not fila:
                 sin_fila += 1
                 logging.warning(f"{etiqueta} → ${precio:,} pero la fecha {job['ida']} no está en {cfg.precio_fecha_col}")
+                if writer: writer.write_row(fila_resultado(job, cheapest, best, "Fecha sin fila"))
                 continue
             pendientes.append((f"{cfg.precio_col}{fila}", int(precio)))
             escritas += 1
             logging.info(f"{etiqueta} → ${precio:,} → {cfg.precio_col}{fila}")
+            if writer: writer.write_row(fila_resultado(job, cheapest, best, "OK"))
             if len(pendientes) >= WRITE_BATCH_SIZE: flush()
         flush()
+        if writer:
+            writer.flush_buffer()
+            logging.info(f" '{cfg.resultado_sheet}': {writer.get_rows_written()} filas escritas")
 
         logging.info(f"\n {version} TRIÁNGULO COMPLETADO: {escritas} precios escritos | "
                      f"{omitidas_limite} sobre el límite | {sin_precio} sin precio | {sin_fila} sin fila de fecha")
