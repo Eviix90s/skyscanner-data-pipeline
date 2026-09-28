@@ -37,5 +37,10 @@ try:
         r=r+['']*(5-len(r))
         if r[3]: print(f"{r[0]:>3} {r[3]:<12} {r[2]:>10} {r[4]:>14}")
     print("\nFecha más barata (F23/G23):", copia.acell('F23').value, copia.acell('G23').value)
+    print("
+=== Pestaña de resultados (copia de Triangulo1), primeras filas A:L ===")
+    for r in copia_res.get('A1:L6'): print("  ", r)
+    print("   total filas con datos:", len([r for r in copia_res.get('A2:A200') if r and r[0]]))
 finally:
-    ss.del_worksheet(copia); print("\nCopia eliminada")
+    ss.del_worksheet(copia); dst.del_worksheet(copia_res); print("
+Copias eliminadas")
