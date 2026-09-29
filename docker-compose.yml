@@ -206,7 +206,31 @@ services:
         max-size: "10m"
         max-file: "3"
   # ==============================
-  # CONTENEDOR 9: WATCHTOWER
+  # CONTENEDOR 9: VUELO IDA (sencillo)
+  # ==============================
+  bot-vueida:
+    image: alexn90s/skyscanner-bot:latest
+    container_name: skyscanner-bot-vueida
+    restart: always
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    env_file:
+      - .env
+    environment:
+      - PRIORIDAD_PROCESO=VUEIDA
+      - GOOGLE_KEYFILE=/app/credentials/credentials_multicity.json
+    volumes:
+      - ./credentials:/app/credentials:ro
+      - ./data/vueida:/app/data
+      - ./logs/vueida:/app/logs
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+  # ==============================
+  # CONTENEDOR 10: WATCHTOWER
   # Auto-update cuando hay nueva imagen en Docker Hub
   # ==============================
   watchtower:

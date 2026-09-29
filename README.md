@@ -85,3 +85,10 @@ OFF_SWITCH_CELL, LEG1/LEG2_ORIGEN/DESTINO_CELL, PERSONAS_CELL, CABINA_CELL, MERC
 LIMITE_CELL, MODO_CELL, PRECIO_COL, PRECIO_FECHA_COL, PRECIO_FILA_INICIO, PRECIO_FILA_FIN`.
 
 Prueba: `tests/test_triangulo.py` duplica la pestaña, corre el bot sobre la copia, muestra N/P y borra la copia.
+
+## v3.6: modo IDA (sencillo)
+
+`<PREFIJO>_TIPO=IDA` usa la misma funcion que TRIANGULO con UN solo tramo (`LEG1_ORIGEN_CELL`->`LEG1_DESTINO_CELL`
+en la fecha IDA de la columna B). La columna VUELTA se ignora. Todo lo demas es igual: personas, cabina, mercado,
+moneda, preferir directo, limite por persona, modo Mas barato/Recomendado, precio en N alineado por O, switches.
+Probar con `tests/test_triangulo.py` y `TEST_HOJA=VUEIDA`. Contenedor `bot-vueida` en el compose.

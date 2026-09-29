@@ -1002,7 +1002,7 @@ def procesar_hoja(sm: SheetManager, version: str, cfg: SheetConfig) -> bool:
         if not is_enabled(sm, cfg):
             logging.info(f" {version}: Deshabilitada")
             return False
-        if cfg.tipo == 'TRIANGULO':
+        if cfg.tipo in ('TRIANGULO', 'IDA'):
             return _procesar_hoja_triangulo(sm, version, cfg)
         if cfg.solo_extras:
             return _procesar_hoja_solo_extras(sm, version, cfg)
@@ -1225,12 +1225,21 @@ def _procesar_hoja_triangulo(sm: SheetManager, version: str, cfg: SheetConfig) -
             return v.strip() if isinstance(v, str) else (v if v is not None else default)
 
         # --- Configuración leída de la hoja ---
+        # TIPO=IDA: un solo tramo (E2→F2 en la fecha IDA). TIPO=TRIANGULO: dos tramos.
+        es_ida = cfg.tipo == 'IDA'
         o1, d1 = sanitizar_entrada(celda(cfg.leg1_origen_cell)), sanitizar_entrada(celda(cfg.leg1_destino_cell))
-        o2, d2 = sanitizar_entrada(celda(cfg.leg2_origen_cell)), sanitizar_entrada(celda(cfg.leg2_destino_cell))
-        if not all(validar_iata_code(x) for x in (o1, d1, o2, d2)):
-            logging.error(f" {version}: IATA inválido en tramos: {o1}→{d1}, {o2}→{d2}")
-            apagar_switch(sm, cfg)
-            return False
+        if es_ida:
+            o2 = d2 = ''
+            if not all(validar_iata_code(x) for x in (o1, d1)):
+                logging.error(f" {version}: IATA inválido en tramo: {o1}→{d1}")
+                apagar_switch(sm, cfg)
+                return False
+        else:
+            o2, d2 = sanitizar_entrada(celda(cfg.leg2_origen_cell)), sanitizar_entrada(celda(cfg.leg2_destino_cell))
+            if not all(validar_iata_code(x) for x in (o1, d1, o2, d2)):
+                logging.error(f" {version}: IATA inválido en tramos: {o1}→{d1}, {o2}→{d2}")
+                apagar_switch(sm, cfg)
+                return False
         personas = _a_entero(celda(cfg.personas_cell), 1) or 1
         cabina = _CABINAS.get(celda(cfg.cabina_cell).upper(), CABIN) if cfg.cabina_cell else CABIN
         mercado = (celda(cfg.mercado_cell).upper() or MARKET) if cfg.mercado_cell else MARKET
@@ -1239,14 +1248,17 @@ def _procesar_hoja_triangulo(sm: SheetManager, version: str, cfg: SheetConfig) -
         limite = _a_entero(celda(cfg.limite_cell)) if cfg.limite_cell else None
         modo = celda(cfg.modo_cell).upper() if cfg.modo_cell else 'MÁS BARATO'
         usar_best = 'RECOMEND' in modo
-        logging.info(f" Modo TRIÁNGULO: {o1}→{d1} (ida) + {o2}→{d2} (vuelta)")
+        if es_ida:
+            logging.info(f" Modo IDA (sencillo): {o1}→{d1} en la fecha IDA")
+        else:
+            logging.info(f" Modo TRIÁNGULO: {o1}→{d1} (ida) + {o2}→{d2} (vuelta)")
         logging.info(f"   Personas={personas} | Cabina={cabina} | {mercado}/{moneda} | Directo={directo} | "
                      f"Límite pp={limite} | Escribe={'best (Recomendado)' if usar_best else 'cheapest (Más barato)'} "
                      f"en {cfg.precio_col}{cfg.precio_fila_inicio}:{cfg.precio_col}{cfg.precio_fila_fin}")
 
         # --- Entidades (caché) ---
         ent = {}
-        for iata in dict.fromkeys((o1, d1, o2, d2)):
+        for iata in dict.fromkeys(x for x in (o1, d1, o2, d2) if x):
             e, _ = obtener_entity_info(iata)
             if not e:
                 logging.error(f" No se obtuvo EntityID para {iata}")
@@ -1254,7 +1266,16 @@ def _procesar_hoja_triangulo(sm: SheetManager, version: str, cfg: SheetConfig) -
                 return False
             ent[iata] = e
 
-        pares = leer_parametros_y_pares(sm, cfg)
+        if es_ida:
+            # Solo la columna IDA (B, fila 12 en adelante); la columna VUELTA se ignora
+            pares = []
+            for fila in valores[11:]:
+                ida = (fila[1] if len(fila) > 1 else "").strip()
+                if re.match(r"\d{4}-\d{2}-\d{2}$", ida) and validar_fecha(ida)[0]:
+                    pares.append((ida, ida))
+            logging.info(f" {cfg.captura_sheet}: {len(pares)} fechas de ida")
+        else:
+            pares = leer_parametros_y_pares(sm, cfg)
         if not pares:
             logging.error(f" Sin fechas válidas")
             apagar_switch(sm, cfg)
@@ -1284,11 +1305,15 @@ def _procesar_hoja_triangulo(sm: SheetManager, version: str, cfg: SheetConfig) -
                 logging.warning(f" No se pudieron escribir encabezados K1:L1: {e}")
             writer = IncrementalWriter(ws_res, start_row=2, ultima_col="L")
             logging.info(f" Resultados también en '{cfg.resultado_sheet}' (A:L)")
-        nombres = {i: obtener_entity_info(i)[1] for i in dict.fromkeys((o1, d1, o2, d2))}
+        nombres = {i: obtener_entity_info(i)[1] for i in dict.fromkeys(x for x in (o1, d1, o2, d2) if x)}
 
+        def tramos(ida, vuelta):
+            t = [dict(entity=ent[o1], iata=o1, dest_entity=ent[d1], dest_iata=d1, fecha=ida)]
+            if not es_ida:
+                t.append(dict(entity=ent[o2], iata=o2, dest_entity=ent[d2], dest_iata=d2, fecha=vuelta))
+            return t
         jobs = [dict(entity_orig=ent[o1], entity_dest=ent[d1], ida=ida, vuelta=vuelta, iata_orig=o1, iata_dest=d1,
-                     legs=[dict(entity=ent[o1], iata=o1, dest_entity=ent[d1], dest_iata=d1, fecha=ida),
-                           dict(entity=ent[o2], iata=o2, dest_entity=ent[d2], dest_iata=d2, fecha=vuelta)],
+                     legs=tramos(ida, vuelta),
                      adults=personas, cabin=cabina, market=mercado, currency=moneda, solo_directos=directo)
                 for ida, vuelta in pares]
 
@@ -1314,14 +1339,15 @@ def _procesar_hoja_triangulo(sm: SheetManager, version: str, cfg: SheetConfig) -
 
         def fila_resultado(job, cheapest, best, estado):
             return [o1, nombres.get(o1) or o1, ent[o1], d1, nombres.get(d1) or d1, ent[d1],
-                    job['ida'], job['vuelta'],
+                    job['ida'], "" if es_ida else job['vuelta'],
                     f"${cheapest:,} MXN" if cheapest else "", f"${best:,} MXN" if best else "",
-                    f"{o2}→{d2}", estado]
+                    "" if es_ida else f"{o2}→{d2}", estado]
 
         for idx, (job, precios) in enumerate(buscar_en_paralelo(jobs), 1):
             cheapest, best = precios.get('cheapest'), precios.get('best')
             precio = best if usar_best else cheapest
-            etiqueta = f"[{idx}/{len(jobs)}] {o1}→{d1} {job['ida']} | {o2}→{d2} {job['vuelta']}"
+            etiqueta = (f"[{idx}/{len(jobs)}] {o1}→{d1} {job['ida']}" if es_ida
+                        else f"[{idx}/{len(jobs)}] {o1}→{d1} {job['ida']} | {o2}→{d2} {job['vuelta']}")
             if not precio:
                 sin_precio += 1
                 logging.info(f"{etiqueta} → sin precio (celda vacía)")
@@ -1349,7 +1375,7 @@ def _procesar_hoja_triangulo(sm: SheetManager, version: str, cfg: SheetConfig) -
             writer.flush_buffer()
             logging.info(f" '{cfg.resultado_sheet}': {writer.get_rows_written()} filas escritas")
 
-        logging.info(f"\n {version} TRIÁNGULO COMPLETADO: {escritas} precios escritos | "
+        logging.info(f"\n {version} {'IDA' if es_ida else 'TRIÁNGULO'} COMPLETADO: {escritas} precios escritos | "
                      f"{omitidas_limite} sobre el límite | {sin_precio} sin precio | {sin_fila} sin fila de fecha")
         if get_env(f'{version}_STATS_CELL'):
             actualizar_fecha(sm, cfg)
