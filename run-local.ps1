@@ -2,7 +2,7 @@
 # Uso:  .\run-local.ps1            -> TRIJAZ
 #       .\run-local.ps1 V1         -> REDONDO V1 (usa service-account.json)
 param([string]$Hoja = "TRIJAZ")
-$keyfiles = @{ TRIJAZ="credentials_multicity.json"; VUEIDA="credentials_multicity.json"; V1="service-account.json"; V2="credentials_v2.json"; V3="credentials_v3.json";
+$keyfiles = @{ TRIJAZ="credentials_multicity.json"; VUEIDA="credentials_ida.json"; V1="service-account.json"; V2="credentials_v2.json"; V3="credentials_v3.json";
                PUEBLA="credentials_puebla.json"; JALISCO="credentials_jalisco.json"; EDOMEX="credentials_edomex.json"; YUCATAN="credentials_yucatan.json" }
 $env:PRIORIDAD_PROCESO = $Hoja
 $env:GOOGLE_KEYFILE    = "$PSScriptRoot\credentials\$($keyfiles[$Hoja])"

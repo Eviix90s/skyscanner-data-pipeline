@@ -219,7 +219,7 @@ services:
       - .env
     environment:
       - PRIORIDAD_PROCESO=VUEIDA
-      - GOOGLE_KEYFILE=/app/credentials/credentials_multicity.json
+      - GOOGLE_KEYFILE=/app/credentials/credentials_ida.json
     volumes:
       - ./credentials:/app/credentials:ro
       - ./data/vueida:/app/data
