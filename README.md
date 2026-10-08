@@ -99,3 +99,9 @@ Cualquier hoja (REDONDO, TRIANGULO o IDA) puede limitar la busqueda a ciertas ae
 `<PREFIJO>_AEROLINEAS=AM` (varias: `AM,Y4`). Se manda a la API como `includedCarriersIds`; vacio = todas, como antes.
 Primera hoja con esto: `AMRED` (pestaña `AEROMEXICO RED`, copia de REDONDO V1, resultados en `Resultados AM Redondo`),
 contenedor `bot-amred` con `credentials_am_redondo.json`. Probar en local: `.\run-local.ps1 AMRED` (requiere F66=ON).
+
+## v3.7.1: límite por persona en orígenes extra (modo REDONDO)
+
+Si una hoja REDONDO tiene `<PREFIJO>_EXTRAS_LIMIT_COL=E`, cada origen extra (columna D, filas 39, 41, ...) usa el
+límite por persona de esa columna. Si `cheapest / ADULTOS` lo supera, la fila se escribe en resultados con
+"Sobre límite $X" en lugar de los precios. Sin la variable, los extras se buscan sin límite como siempre.
