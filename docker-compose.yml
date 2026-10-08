@@ -230,7 +230,31 @@ services:
         max-size: "10m"
         max-file: "3"
   # ==============================
-  # CONTENEDOR 10: WATCHTOWER
+  # CONTENEDOR 10: AEROMEXICO REDONDO (solo AM)
+  # ==============================
+  bot-amred:
+    image: alexn90s/skyscanner-bot:latest
+    container_name: skyscanner-bot-amred
+    restart: always
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    env_file:
+      - .env
+    environment:
+      - PRIORIDAD_PROCESO=AMRED
+      - GOOGLE_KEYFILE=/app/credentials/credentials_am_redondo.json
+    volumes:
+      - ./credentials:/app/credentials:ro
+      - ./data/amred:/app/data
+      - ./logs/amred:/app/logs
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+  # ==============================
+  # CONTENEDOR 11: WATCHTOWER
   # Auto-update cuando hay nueva imagen en Docker Hub
   # ==============================
   watchtower:

@@ -164,6 +164,8 @@ class SheetConfig:
     precio_fecha_col: str = "O"  # columna con la fecha de cada fila de precio
     precio_fila_inicio: int = 11
     precio_fila_fin: int = 130
+    # Filtro de aerolíneas (aplica a cualquier TIPO): ['AM'] = solo Aeroméxico; vacío = todas
+    aerolineas: List[str] = field(default_factory=list)
 
 
 def load_sheet_configs() -> Dict[str, SheetConfig]:
@@ -205,6 +207,7 @@ def load_sheet_configs() -> Dict[str, SheetConfig]:
             precio_fecha_col=get_env(f'{prefix}PRECIO_FECHA_COL', 'O').upper(),
             precio_fila_inicio=get_env_int(f'{prefix}PRECIO_FILA_INICIO', 11),
             precio_fila_fin=get_env_int(f'{prefix}PRECIO_FILA_FIN', 130),
+            aerolineas=[a.strip().upper() for a in get_env(f'{prefix}AEROLINEAS', '').split(',') if a.strip()],
         )
     return configs
 
@@ -738,11 +741,13 @@ def _is_search_complete(status: str) -> bool:
 @retry_with_backoff(max_retries=2)
 def buscar_precios_skyscanner(entity_orig, entity_dest, ida, vuelta, iata_orig, iata_dest,
                               legs: List[dict] = None, adults: int = None, cabin: str = None,
-                              market: str = None, currency: str = None, solo_directos: bool = None) -> dict:
+                              market: str = None, currency: str = None, solo_directos: bool = None,
+                              aerolineas: List[str] = None) -> dict:
     """Búsqueda ida y vuelta (comportamiento de siempre) o multi-city si se pasa `legs`:
         legs = [{'entity': id, 'iata': 'GDL', 'dest_entity': id, 'dest_iata': 'BOS', 'fecha': 'YYYY-MM-DD'}, ...]
     Los demás parámetros opcionales permiten que una hoja use sus propios valores (personas,
-    cabina, mercado, moneda, directos) sin tocar el .env. Si no se pasan, se usa el .env."""
+    cabina, mercado, moneda, directos) sin tocar el .env. Si no se pasan, se usa el .env.
+    `aerolineas` (ej. ['AM']) limita la búsqueda a esas aerolíneas (includedCarriersIds de la API)."""
     _sd = SOLO_DIRECTOS if solo_directos is None else solo_directos
     if legs is None:
         ok_i, _ = validar_fecha(ida)
@@ -783,8 +788,10 @@ def buscar_precios_skyscanner(entity_orig, entity_dest, ida, vuelta, iata_orig, 
             "childrenAges": [] if CHILDREN == 0 else [8] * CHILDREN
         }
     }
+    if aerolineas:
+        payload["query"]["includedCarriersIds"] = list(aerolineas)
     try:
-        logging.info(f" Búsqueda: {route_log} | {ida} → {vuelta}")
+        logging.info(f" Búsqueda: {route_log} | {ida} → {vuelta}" + (f" | solo {','.join(aerolineas)}" if aerolineas else ""))
         search_start = time.time()
         r = requests.post(URL_LIVE_CREATE, json=payload, headers=headers, timeout=30)
         r.raise_for_status()
@@ -862,7 +869,7 @@ def buscar_precios_skyscanner(entity_orig, entity_dest, ida, vuelta, iata_orig, 
 def _buscar_job(job: dict) -> dict:
     """Ejecuta una búsqueda a partir de un job (dict con los datos de la ruta).
     Los jobs REDONDO solo traen los 6 datos básicos; los de TRIANGULO agregan legs/adults/etc."""
-    extra = {k: job[k] for k in ('legs', 'adults', 'cabin', 'market', 'currency', 'solo_directos') if k in job}
+    extra = {k: job[k] for k in ('legs', 'adults', 'cabin', 'market', 'currency', 'solo_directos', 'aerolineas') if k in job}
     try:
         return buscar_precios_skyscanner(job['entity_orig'], job['entity_dest'], job['ida'], job['vuelta'],
                                          job['iata_orig'], job['iata_dest'], **extra)
@@ -1049,7 +1056,8 @@ def _procesar_hoja_normal(sm: SheetManager, version: str, cfg: SheetConfig) -> b
         logging.info(f"\n Ruta principal ({len(pares)} fechas, {PARALLEL_SEARCHES} en paralelo)...")
         jobs = [dict(entity_orig=entity_orig, entity_dest=entity_dest, ida=ida, vuelta=vuelta,
                      iata_orig=iata_origen, iata_dest=iata_destino,
-                     nombre_orig=nombre_orig, nombre_dest=nombre_dest) for ida, vuelta in pares]
+                     nombre_orig=nombre_orig, nombre_dest=nombre_dest,
+                     aerolineas=cfg.aerolineas) for ida, vuelta in pares]
         for idx, (job, precios) in enumerate(buscar_en_paralelo(jobs), 1):
             cheapest = precios.get('cheapest')
             best = precios.get('best')
@@ -1070,7 +1078,8 @@ def _procesar_hoja_normal(sm: SheetManager, version: str, cfg: SheetConfig) -> b
                 for ida, vuelta in pares:
                     jobs_extra.append(dict(entity_orig=entity_ex, entity_dest=entity_dest, ida=ida, vuelta=vuelta,
                                            iata_orig=iata_extra, iata_dest=iata_destino,
-                                           nombre_orig=nombre_ex, nombre_dest=nombre_dest))
+                                           nombre_orig=nombre_ex, nombre_dest=nombre_dest,
+                                           aerolineas=cfg.aerolineas))
             for idx, (job, precios) in enumerate(buscar_en_paralelo(jobs_extra), 1):
                 cheapest = precios.get('cheapest')
                 best = precios.get('best')
@@ -1141,7 +1150,8 @@ def _procesar_hoja_solo_extras(sm: SheetManager, version: str, cfg: SheetConfig)
             for ida, vuelta in pares:
                 jobs.append(dict(entity_orig=entity_ex, entity_dest=entity_dest, ida=ida, vuelta=vuelta,
                                  iata_orig=iata_extra, iata_dest=iata_destino,
-                                 nombre_orig=nombre_ex, nombre_dest=nombre_dest, limite=limite))
+                                 nombre_orig=nombre_ex, nombre_dest=nombre_dest, limite=limite,
+                                 aerolineas=cfg.aerolineas))
 
         logging.info(f"\n {len(jobs)} búsquedas, {PARALLEL_SEARCHES} en paralelo...")
         for idx, (job, precios) in enumerate(buscar_en_paralelo(jobs), 1):
@@ -1314,7 +1324,8 @@ def _procesar_hoja_triangulo(sm: SheetManager, version: str, cfg: SheetConfig) -
             return t
         jobs = [dict(entity_orig=ent[o1], entity_dest=ent[d1], ida=ida, vuelta=vuelta, iata_orig=o1, iata_dest=d1,
                      legs=tramos(ida, vuelta),
-                     adults=personas, cabin=cabina, market=mercado, currency=moneda, solo_directos=directo)
+                     adults=personas, cabin=cabina, market=mercado, currency=moneda, solo_directos=directo,
+                     aerolineas=cfg.aerolineas)
                 for ida, vuelta in pares]
 
         pendientes: List[tuple] = []

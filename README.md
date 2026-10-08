@@ -10,7 +10,7 @@ Corre como varios contenedores (uno por hoja), cada uno con su propia service ac
 | `apiskyscanner_api.py` | Todo el codigo del bot |
 | `requirements.txt` | Dependencias Python |
 | `Dockerfile` | Construye la imagen `alexn90s/skyscanner-bot` |
-| `docker-compose.yml` | Produccion: 7 bots + Watchtower (usa la imagen de Docker Hub) |
+| `docker-compose.yml` | Produccion: bots (uno por hoja) + Watchtower (usa la imagen de Docker Hub) |
 | `docker-compose.dev.yml` | Desarrollo: 1 bot construido desde el codigo local |
 | `.env` | Configuracion y API keys (NO se sube a Git) |
 | `.env.example` | Plantilla del .env sin valores |
@@ -92,3 +92,10 @@ Prueba: `tests/test_triangulo.py` duplica la pestaña, corre el bot sobre la cop
 en la fecha IDA de la columna B). La columna VUELTA se ignora. Todo lo demas es igual: personas, cabina, mercado,
 moneda, preferir directo, limite por persona, modo Mas barato/Recomendado, precio en N alineado por O, switches.
 Probar con `tests/test_triangulo.py` y `TEST_HOJA=VUEIDA`. Contenedor `bot-vueida` en el compose.
+
+## v3.7: filtro de aerolineas por hoja (`<PREFIJO>_AEROLINEAS`)
+
+Cualquier hoja (REDONDO, TRIANGULO o IDA) puede limitar la busqueda a ciertas aerolineas con
+`<PREFIJO>_AEROLINEAS=AM` (varias: `AM,Y4`). Se manda a la API como `includedCarriersIds`; vacio = todas, como antes.
+Primera hoja con esto: `AMRED` (pestaña `AEROMEXICO RED`, copia de REDONDO V1, resultados en `Resultados AM Redondo`),
+contenedor `bot-amred` con `credentials_am_redondo.json`. Probar en local: `.\run-local.ps1 AMRED` (requiere F66=ON).
