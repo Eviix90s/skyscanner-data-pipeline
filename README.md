@@ -105,3 +105,6 @@ contenedor `bot-amred` con `credentials_am_redondo.json`. Probar en local: `.\ru
 Si una hoja REDONDO tiene `<PREFIJO>_EXTRAS_LIMIT_COL=E`, cada origen extra (columna D, filas 39, 41, ...) usa el
 límite por persona de esa columna. Si `cheapest / ADULTOS` lo supera, la fila se escribe en resultados con
 "Sobre límite $X" en lugar de los precios. Sin la variable, los extras se buscan sin límite como siempre.
+
+Hoja `AMTRI` (TRIANGULO AEROMEX, libro Vuelos V6, copia de VUE TRI JAZ): `TIPO=TRIANGULO` + `AEROLINEAS=AM`, switch F59/F63,
+resultados en `Resultados AM Triangulo`, contenedor `bot-amtri` con `credentials_am_triangulo.json`. Probar: `TEST_HOJA=AMTRI`.
