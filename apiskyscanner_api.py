@@ -892,10 +892,13 @@ def buscar_en_paralelo(jobs: List[dict], max_workers: int = None):
             yield job, precios
 
 
-def _fila_resultado(job: dict, cheapest: int, best: Optional[int]) -> List[Any]:
+def _fila_resultado(job: dict, cheapest: int, best: Optional[int], texto_precio: str = "") -> List[Any]:
+    """texto_precio: si se pasa (ej. 'Sobre límite $4,999'), va en lugar de los precios."""
     return [job['iata_orig'], job.get('nombre_orig') or job['iata_orig'], job['entity_orig'],
             job['iata_dest'], job.get('nombre_dest') or job['iata_dest'], job['entity_dest'],
-            job['ida'], job['vuelta'], f"${cheapest:,} MXN", f"${best:,} MXN" if best else ""]
+            job['ida'], job['vuelta'],
+            texto_precio or f"${cheapest:,} MXN",
+            texto_precio or (f"${best:,} MXN" if best else "")]
 
 
 
@@ -1068,7 +1071,14 @@ def _procesar_hoja_normal(sm: SheetManager, version: str, cfg: SheetConfig) -> b
 
         # Orígenes extra: se resuelven las entidades en serie (usan caché) y
         # luego TODAS las combinaciones origen×fecha se buscan en paralelo
-        extras = filtrar_extras_unicos(obtener_origenes_extras(sm, cfg), iata_origen)
+        # Si la hoja configura EXTRAS_LIMIT_COL (ej. E), cada origen extra trae su límite por persona
+        # (misma zona que SOLO_EXTRAS: IATA en D, límite en E). Sin esa variable, se buscan sin límite.
+        if cfg.extras_limit_col:
+            limites = {e['iata']: e['limite'] for e in obtener_origenes_extras_con_limite(sm, cfg)}
+            extras = filtrar_extras_unicos(list(limites), iata_origen)
+        else:
+            limites = {}
+            extras = filtrar_extras_unicos(obtener_origenes_extras(sm, cfg), iata_origen)
         if extras:
             logging.info(f"\n {len(extras)} orígenes extra")
             jobs_extra = []
@@ -1079,14 +1089,24 @@ def _procesar_hoja_normal(sm: SheetManager, version: str, cfg: SheetConfig) -> b
                     jobs_extra.append(dict(entity_orig=entity_ex, entity_dest=entity_dest, ida=ida, vuelta=vuelta,
                                            iata_orig=iata_extra, iata_dest=iata_destino,
                                            nombre_orig=nombre_ex, nombre_dest=nombre_dest,
-                                           aerolineas=cfg.aerolineas))
+                                           aerolineas=cfg.aerolineas, limite=limites.get(iata_extra)))
+            sobre_limite = 0
             for idx, (job, precios) in enumerate(buscar_en_paralelo(jobs_extra), 1):
                 cheapest = precios.get('cheapest')
                 best = precios.get('best')
+                limite = job.get('limite')
                 logging.info(f"[{job['iata_orig']}] [{idx}/{len(jobs_extra)}] {job['ida']} - {job['vuelta']} "
                              f"→ Cheapest=${cheapest or 0:,} | Best=${best or 0:,}")
+                if cheapest and limite and cheapest / ADULTOS > limite:
+                    sobre_limite += 1
+                    logging.info(f"    ${cheapest:,} (${cheapest / ADULTOS:,.0f} pp) > límite ${limite:,} → Sobre límite")
+                    if WRITE_IMMEDIATELY:
+                        writer.write_row(_fila_resultado(job, cheapest, best, texto_precio=f"Sobre límite ${limite:,}"))
+                    continue
                 if cheapest and WRITE_IMMEDIATELY:
                     writer.write_row(_fila_resultado(job, cheapest, best))
+            if limites:
+                logging.info(f" Orígenes extra: {sobre_limite} de {len(jobs_extra)} sobre el límite")
 
         writer.flush_buffer()
         logging.info(f"\n {version}: {writer.get_rows_written()} filas escritas")
