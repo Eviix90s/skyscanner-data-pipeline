@@ -254,7 +254,31 @@ services:
         max-size: "10m"
         max-file: "3"
   # ==============================
-  # CONTENEDOR 11: WATCHTOWER
+  # CONTENEDOR 11: TRIANGULO AEROMEXICO (multi-city, solo AM)
+  # ==============================
+  bot-amtri:
+    image: alexn90s/skyscanner-bot:latest
+    container_name: skyscanner-bot-amtri
+    restart: always
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    env_file:
+      - .env
+    environment:
+      - PRIORIDAD_PROCESO=AMTRI
+      - GOOGLE_KEYFILE=/app/credentials/credentials_am_triangulo.json
+    volumes:
+      - ./credentials:/app/credentials:ro
+      - ./data/amtri:/app/data
+      - ./logs/amtri:/app/logs
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+  # ==============================
+  # CONTENEDOR 12: WATCHTOWER
   # Auto-update cuando hay nueva imagen en Docker Hub
   # ==============================
   watchtower:
